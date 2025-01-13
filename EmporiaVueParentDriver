@@ -1,0 +1,215 @@
+/* Todo list
+* none for now
+/*****************************************************************************************************************
+ *  Raw Source: https://github.com/amithalp/EmporiaV2
+ *  License:
+ *   Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *   in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *   for the specific language governing permissions and limitations under the License.
+ *
+ *   Modifcation History
+ *   Date           Name            Change
+ *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *****************************************************************************************************************
+ * EmporiaVueParentDriver
+ * 
+ * This driver acts as the parent device for Emporia Vue integrations.
+ * - Manages child devices corresponding to monitored circuits.
+ * - Handles API communication for data retrieval.
+ * - Supports refreshing data and updating child devices.
+ * - Fetches and stores location-related attributes.
+ * 
+ * Author: Amit Halperin
+ */
+
+import groovy.json.*
+
+metadata {
+    definition(
+        name: "EmporiaVueParentDriver",
+        namespace: "amithalp",
+        author: "Amit Halperin",
+        importUrl: ""
+    ) {
+        capability "Refresh"
+        capability "PowerMeter"
+        capability "EnergyMeter"
+
+        command "fetchLocationData"
+        command "fetchDeviceData" // New command to fetch specific device data
+        attribute "locationDeviceName", "string"
+        attribute "locationZipCode", "string"
+        attribute "locationTimeZone", "string"
+        attribute "billingCycleStartDay", "number"
+        attribute "usageCentPerKwHour", "number"
+        attribute "peakDemandDollarPerKw", "number"
+        attribute "utilityRateGid", "string"
+        attribute "latitude", "number"
+        attribute "longitude", "number"
+        attribute "locationAirConditioning", "string"
+        attribute "locationHeatSource", "string"
+        attribute "locationSqFt", "string"
+        attribute "locationType", "string"
+        attribute "locationNumElectricCars", "number"
+        attribute "locationNumPeople", "number"
+        attribute "locationSwimmingPool", "string"
+        attribute "lastUpdate", "string"
+        //attribute "powerUnit", "string"
+        attribute "energyUnit", "string"
+        attribute "retrievalFrequency", "string"
+    }
+}
+
+preferences {
+    input name: "logEnable", type: "bool", title: "Enable Debug Logging", defaultValue: true
+    input name: "jsonState", type: "bool", title: "Show JSON state", defaultValue: false
+}
+
+def installed() {
+    log.info "EmporiaVueParentDriver installed for device ${device.name}"
+    initialize()
+    fetchLocationData()
+}
+
+def updated() {
+    log.info "EmporiaVueParentDriver updated for device ${device.name}"
+    initialize()
+    fetchLocationData()
+}
+
+def initialize() {
+    if (logEnable) {
+        log.debug "Initializing EmporiaVueParentDriver for ${device.name}"
+        runIn(1800, toggleDebugLogging) // Disable debug logging after 30 minutes
+    }
+    state.lastUpdate = null
+}
+
+def toggleDebugLogging() {
+    log.warn "Disabling debug logging for ${device.name} after 30 minutes."
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+def refresh() {
+    if (logEnable) log.debug "Refreshing data for ${device.name}"
+    fetchDeviceData()
+}
+
+//this method is called from a child device
+def refreshData() {
+    if (parent) {
+        def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
+        parent.fetchData(deviceGid)
+        log.info "Triggered data refresh for all devices under parent ${device.name}"
+    } else {
+        log.warn "No parent app found to trigger data refresh."
+    }
+}
+
+
+def fetchDeviceData() {
+    if (!parent) {
+        log.error "Parent app not found. Unable to fetch device data."
+        return
+    }
+
+    def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
+    if (logEnable) log.debug "Requesting data fetch for device GID: ${deviceGid}"
+    parent.fetchData(deviceGid) // Trigger the app's fetchData method
+}
+
+def fetchLocationData() {
+    if (!parent || !parent.hasProperty('state')) {
+        log.error "Parent app state is not available. Unable to fetch location data."
+        return
+    }
+
+    def token = parent?.state?.idToken
+    if (!token) {
+        log.error "Authentication token is missing. Unable to fetch location data."
+        return
+    }
+
+    def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
+    def host = "https://api.emporiaenergy.com/"
+    def command = "devices/${deviceGid}/locationProperties"
+
+    def params = [
+        uri: "${host}${command}",
+        headers: [
+            'authtoken': token
+        ]
+    ]
+
+    try {
+        httpGet(params) { resp ->
+            if (resp.status == 200) {
+                def locationData = resp.data
+                if (logEnable) log.debug "Fetched location data: ${locationData}"
+
+                sendEvent(name: "locationDeviceName", value: locationData.deviceName ?: "Unknown")
+                sendEvent(name: "locationZipCode", value: locationData.zipCode ?: "Unknown")
+                sendEvent(name: "locationTimeZone", value: locationData.timeZone ?: "Unknown")
+                sendEvent(name: "billingCycleStartDay", value: locationData.billingCycleStartDay ?: 0)
+                sendEvent(name: "usageCentPerKwHour", value: locationData.usageCentPerKwHour ?: 0)
+                sendEvent(name: "peakDemandDollarPerKw", value: locationData.peakDemandDollarPerKw ?: 0)
+                sendEvent(name: "utilityRateGid", value: locationData.utilityRateGid ?: "Unknown")
+                sendEvent(name: "latitude", value: locationData.latitudeLongitude?.latitude ?: 0)
+                sendEvent(name: "longitude", value: locationData.latitudeLongitude?.longitude ?: 0)
+                sendEvent(name: "locationAirConditioning", value: locationData.locationInformation?.airConditioning ?: "Unknown")
+                sendEvent(name: "locationHeatSource", value: locationData.locationInformation?.heatSource ?: "Unknown")
+                sendEvent(name: "locationSqFt", value: locationData.locationInformation?.locationSqFt ?: "Unknown")
+                sendEvent(name: "locationType", value: locationData.locationInformation?.locationType ?: "Unknown")
+                sendEvent(name: "locationNumElectricCars", value: locationData.locationInformation?.numElectricCars?.toInteger() ?: 0)
+                sendEvent(name: "locationNumPeople", value: locationData.locationInformation?.numPeople?.toInteger() ?: 0)
+                sendEvent(name: "locationSwimmingPool", value: locationData.locationInformation?.swimmingPool ?: "Unknown")
+
+                state.lastUpdate = new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'")
+                sendEvent(name: "lastUpdate", value: state.lastUpdate)
+
+                log.info "Location data successfully updated for device ${device.deviceNetworkId}"
+            } else {
+                log.error "Error fetching location data. HTTP status: ${resp.status}"
+            }
+        }
+    } catch (e) {
+        log.error "Error fetching location data: ${e.message}"
+    }
+}
+
+def setEnergyUnit(String unit) {
+    if (logEnable) log.debug "Setting energy unit to ${unit} for ${device.name}"
+
+    def validUnits = ["KilowattHours", "Dollars"]
+    if (!validUnits.contains(unit)) {
+        log.error "Invalid energy unit: ${unit}. Supported units are: ${validUnits.join(', ')}"
+        return
+    }
+
+    state.energyUnit = unit
+    sendEvent(name: "energyUnit", value: unit)
+
+    //def powerUnit = (unit == "KilowattHours") ? "Watt" : "Dollars"
+    //sendEvent(name: "powerUnit", value: powerUnit)
+
+    if (logEnable) log.info "Energy unit set to ${unit} for ${device.name}" //and power unit set to ${powerUnit} for ${device.name}"
+}
+
+def getAppSettings() {
+    def app = parent
+    if (!app) {
+        log.error "Unable to fetch settings: Parent app is missing."
+        return [:]
+    }
+
+    return [
+        retrievalFrequency: app.state.retrievalFrequency,
+        energyUnit: app.state.energyUnit,
+        dateFormat: app.state.dateFormat
+    ]
+}
