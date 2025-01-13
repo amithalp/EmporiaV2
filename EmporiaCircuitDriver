@@ -1,0 +1,81 @@
+/* Todo list
+* none for now
+/*****************************************************************************************************************
+ *  Raw Source: https://github.com/amithalp/EmporiaV2
+ *  License:
+ *   Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *   in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *   for the specific language governing permissions and limitations under the License.
+ *
+ *   Modifcation History
+ *   Date           Name            Change
+ *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *****************************************************************************************************************
+ * Emporia Circuit Driver
+ * 
+ * This driver acts as the child device for individual circuits monitored by Emporia Vue.
+ * - Receives and displays Usage and Energy Unit data.
+ */
+
+metadata {
+    definition(
+        name: "Emporia Circuit Driver",
+        namespace: "amithalp",
+        author: "Amit Halperin",
+        importUrl: "",
+        version: "1.0.0"
+    ) {
+        capability "PowerMeter"
+        capability "EnergyMeter"
+        capability "Refresh"
+
+        attribute "usagePercentage", "number" // For percentage of total
+        attribute "usage", "string" //raw usage data
+        attribute "energyUnit", "string" 
+        attribute "lastUpdated", "string" 
+        attribute "retrievalFrequency", "string"
+        attribute "power" , "number" 
+        attribute "energy" , "number" 
+        attribute "powerUnit" , "string" 
+                
+    }
+}
+
+preferences {
+    input name: "logEnable", type: "bool", title: "Enable Debug Logging", defaultValue: true
+}
+
+def installed() {
+    log.info "Emporia Circuit Driver installed for device ${device.name}"
+    initialize()
+}
+
+def updated() {
+    log.info "Emporia Circuit Driver updated for device ${device.name}"
+    initialize()
+}
+
+def initialize() {
+    if (logEnable) {
+        log.debug "Initializing Emporia Circuit Driver for ${device.name}"
+        runIn(7200, toggleDebugLogging) // Disable debug logging after 120 minutes
+    }
+}
+
+def toggleDebugLogging() {
+    log.warn "Disabling debug logging for ${device.name} after 120 minutes."
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+//case a user click Refresh on the child device page this will trigger the fetchData method in the app for all devices assosiated to the same parent device
+def refresh() {
+    if (logEnable) log.debug "Refresh called on ${device.name}"
+    parent?.refreshData()
+}
+
+
