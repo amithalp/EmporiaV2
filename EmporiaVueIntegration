@@ -15,6 +15,7 @@
  *   Modifcation History
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *   2025-01-14     amithalp	    version 1.0.1 - Fix re-sechduling upon update
  *   
  *****************************************************************************************************************/
 /**
@@ -34,7 +35,7 @@ definition(
     category: "Utility",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.0.0" 
+    version: "1.0.1" 
 )
 
 preferences {
@@ -124,7 +125,16 @@ def initialize() {
     } else {
         if (state.debugLog) log.debug "No token expiry found. Skipping token refresh scheduling."
     }
+
+    // Ensure data retrieval is scheduled - fixed in version 1.0.1
+    if (settings.retrievalFrequency) {
+        if (state.debugLog) log.debug "Scheduling data retrieval with frequency: ${settings.retrievalFrequency}."
+        scheduleDataRetrieval()
+    } else {
+        log.warn "Retrieval frequency not set. Skipping data retrieval scheduling."
+    }
 }
+
 
 
 def uninstalled() {
