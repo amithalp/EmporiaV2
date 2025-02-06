@@ -1,5 +1,6 @@
 /* Todo list
-* none for now
+* None
+
 /*****************************************************************************************************************
  *  Raw Source: https://github.com/amithalp/EmporiaV2
  *  License:
@@ -16,13 +17,14 @@
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
  *   2025-01-14     amithalp	    version 1.0.1 - Fix re-sechduling upon update
- *   
+ *   2025-02-06		amithalp		version 1.0.2 - Add functionality to update and delete devices in Hubitat based on changes in the Emporia side (circuit name, merging and unmerging circuits).
+ * 													This will be done only when the user click the Create/Update/Delete Hubitat Devices button
  *****************************************************************************************************************/
 /**
  * EmporiaVueIntegration
  * 
  * Hubitat app for integrating Emporia Vue devices.
- * Handles token authentication and refresh, device discovery, device creation and device updating.
+ * Handles token authentication and refresh, device discovery, device creation, device updating and device deletion.
  */
 
 import groovy.json.*
@@ -35,7 +37,7 @@ definition(
     category: "Utility",
     iconUrl: "",
     iconX2Url: "",
-    version: "1.0.1" 
+    version: "1.0.2" 
 )
 
 preferences {
@@ -89,7 +91,9 @@ def discoverDevicesPage() {
                     input name: "selectedDevice_${device.deviceGid}", type: "bool", title: "${device.deviceGid} - ${device.manufacturerDeviceId}", required: false
                 }
                 input name: "updateSelectionButton", type: "button", title: "Update Selection"
-                input name: "createDevicesButton", type: "button", title: "Create Hubitat Devices"
+                input name: "createDevicesButton", type: "button", title: "Create/Update/Delete Hubitat Devices"
+                paragraph "Clicking the 'Create/Update/Delete Hubitat Devices' button will compare your current Hubitat devices with the EmporiaVue circuits and either create, update, or delete Hubitat devices accordingly."
+                
             }
         }
         section {
@@ -97,6 +101,7 @@ def discoverDevicesPage() {
         }
     }
 }
+
 
 //------------------------------- Basic app functions ----------------------------------------------------------------------------------------------------
 def installed() {
@@ -335,6 +340,8 @@ def createSelectedDevices() {
         return
     }
 
+    def validChildDeviceIds = []
+
     selectedDevices.each { device ->
         def deviceId = "EmporiaVue${device.deviceGid}"
         def parentDevice = getChildDevice(deviceId) ?: addChildDevice("amithalp", "EmporiaVueParentDriver", deviceId, [name: deviceId, isComponent: false])
@@ -348,16 +355,18 @@ def createSelectedDevices() {
                 state.parentDevices << deviceId
             }
 
-            def usageData = fetchInitialDeviceData(device.deviceGid) // Fetch usage data for the device
+            def usageData = fetchInitialDeviceData(device.deviceGid)
             if (usageData) {
                 usageData.each { channel ->
-                    // Process channels, including nested devices
                     def allChannels = [channel] + (channel.nestedDevices ?: [])
                     allChannels.each { nestedChannel ->
-                        if (nestedChannel.usage != null && nestedChannel.name) { // Filter valid channels
+                        if (nestedChannel.usage != null && nestedChannel.name) {
                             def childDeviceId = "${deviceId}-${nestedChannel.channelNum ?: nestedChannel.channelId ?: nestedChannel.name.hashCode()}"
+                            validChildDeviceIds << childDeviceId
                             def childName = nestedChannel.name
-                            if (!parentDevice.getChildDevice(childDeviceId)) {
+                            def existingChildDevice = parentDevice.getChildDevice(childDeviceId)
+                            
+                            if (!existingChildDevice) {
                                 try {
                                     def childDevice = parentDevice.addChildDevice(
                                         "amithalp",
@@ -370,22 +379,69 @@ def createSelectedDevices() {
                                     log.error "Failed to create child device: ${e.message}"
                                 }
                             } else {
-                                log.warn "Child device with DNI ${childDeviceId} already exists. Skipping."
+                                if (existingChildDevice.name != childName || existingChildDevice.label != "${childName} (${nestedChannel.channelNum ?: nestedChannel.channelId})") {
+                                    existingChildDevice.setName(childName)
+                                    existingChildDevice.setLabel("${childName} (${nestedChannel.channelNum ?: nestedChannel.channelId})")
+                                    log.info "Updated child device: ${childDeviceId} for channel ${childName}. Device name was changed"
+                                }
                             }
-                        } else {
-                            log.warn "Skipping channel ${nestedChannel.channelNum ?: nestedChannel.channelId} due to missing usage data or name."
                         }
                     }
                 }
-            } else {
-                log.warn "No usage data found for device ${device.deviceGid}. Skipping child device creation."
             }
-        } else {
-            log.error "Failed to create parent device: ${deviceId}"
         }
     }
 
+    log.debug "Valid child devices: ${validChildDeviceIds}"
+    state.validChildDeviceIds = validChildDeviceIds.unique()
+    runIn(20, deleteOrphanedDevices)
+
     state.authStatus = "Created ${selectedDevices.size()} parent devices and their child devices."
+}
+
+def deleteOrphanedDevices() {
+    def allHubitatChildDevices = []
+    
+    // Iterate through all parents and get their child devices
+    state.parentDevices.each { parentId ->
+        def parentDevice = getChildDevice(parentId)
+        if (parentDevice) {
+            def childDevices = parentDevice.getChildDevices().collect { it.deviceNetworkId }
+            allHubitatChildDevices.addAll(childDevices)
+        }
+    }
+    allHubitatChildDevices = allHubitatChildDevices.unique()
+
+    log.debug "All Hubitat child devices: ${allHubitatChildDevices}"
+    def validChildDevices = state.validChildDeviceIds ?: []
+    log.debug "Valid child devices from Emporia: ${validChildDevices}"
+
+    def orphanedDevices = allHubitatChildDevices.findAll { !validChildDevices.contains(it) }
+    log.debug "Identified orphaned devices: ${orphanedDevices}"
+
+    orphanedDevices.each { childId ->
+        def parentDevice = state.parentDevices.collect { getChildDevice(it) }.find { it?.getChildDevice(childId) }
+        
+        if (!parentDevice) {
+            log.warn "Skipping deletion: Could not find parent for orphaned child device ${childId}"
+            return
+        }
+
+        def childDevice = parentDevice.getChildDevice(childId)
+        if (!childDevice) {
+            log.warn "Skipping deletion: Orphaned child device ${childId} not found under parent ${parentDevice.deviceNetworkId}"
+            return
+        }
+        
+        def childName = childDevice.getLabel() ?: "Unknown"
+        log.warn "Deleting orphaned child device: ${childId} (Name: ${childName})"
+
+        try {
+            parentDevice.deleteChildDevice(childId)
+        } catch (e) {
+            log.error "Failed to delete orphaned device ${childId}: ${e.message}"
+        }
+    }
 }
 
 
