@@ -40,7 +40,7 @@ This project integrates Emporia Vue devices into the Hubitat platform, enabling 
 
 ### Device Management
 - **Discover Devices**: Finds and lists available Emporia devices.
-- **Create Devices**: Adds selected devices as parent and create a child device for every Circuit in Hubitat. As of version 1.0.2, devices will be added, updated or deleted to match the circuits defined in the Emporia app.
+- **Create/Update/Delete Devices**: Adds selected devices as parent and create a child device for every Circuit in Hubitat. As of version 1.0.2, devices will be added, updated or deleted to match the circuits defined in the Emporia app.
 
 ### Data Retrieval
 - **Scheduled Retrieval**: Retrieves data at the configured frequency.
