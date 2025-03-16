@@ -1,107 +1,136 @@
 # EmporiaVue Integration for Hubitat
 
-This project integrates Emporia Vue devices into the Hubitat platform, enabling energy monitoring and management directly within the Hubitat environment. The integration supports token-based authentication, device discovery, data retrieval, and dynamic updates to child devices.
+This project integrates **Emporia Vue** devices into the **Hubitat** platform, enabling real-time energy monitoring and management. The integration supports **token-based authentication**, **device discovery**, **data retrieval**, and **dynamic updates to child devices**.
 
 ## Features
-- **Authentication**: Secure token-based authentication with Emporia's API.
-- **Device Discovery**: Automatically discovers Emporia devices associated with your account.
-- **Child Device Creation**: Creates Hubitat devices for each Emporia device and its channels.
-- **Data Retrieval**: Scheduled or manual retrieval of usage data.
-- **Dynamic Settings**: User-configurable settings for retrieval frequency, energy units, and date formats.
-- **Custom Attributes**: Updates child devices with attributes like `usage`, `usagePercentage`, `power`, `energy`, `powerUnit`, `energyUnit`, `retrievalFrequency`, and `lastUpdated`.
+- **Authentication**: Secure **token-based authentication** with Emporia’s API.
+- **Device Discovery**: Automatically **discovers Emporia devices** linked to your account.
+- **Child Device Management**: Creates **Hubitat child devices** for each circuit, ensuring full synchronization.
+- **Data Retrieval**: Supports **scheduled** and **manual** retrieval of energy usage.
+- **Device Labeling**: Ensures **unique labels** to avoid conflicts in **InfluxDB and Grafana**.
+- **Custom Attributes**: Updates child devices with:
+  - `usage`, `usagePercentage`, `power`, `energy`
+  - `powerUnit`, `energyUnit`, `retrievalFrequency`, `lastUpdated`
 
 ## Installation
 
-1. **Add the App and Drivers to Hubitat**:
-   - Copy the provided app and drivers code into your Hubitat environment.
-   - Add the "EmporiaVueIntegration" app.
-   - Add the "EmporiaVueParentDriver" and "Emporia Circuit Driver" drivers.
+### 1. **Add the App and Drivers to Hubitat**
+- Copy the **app** and **drivers** code into Hubitat.
+- Install:
+  - **EmporiaVueIntegration** (App)
+  - **EmporiaVueParentDriver** (Parent Device Driver)
+  - **Emporia Circuit Driver** (Child Device Driver)
 
-2. **Install the App**:
-   - Go to Apps in the Hubitat interface and add the "EmporiaVueIntegration" app.
+### 2. **Install the App**
+- In Hubitat, navigate to **Apps** → Add **EmporiaVueIntegration**.
 
-3. **Configure Authentication**:
-   - Enter your Emporia account email and password.
-   - Click the "Authenticate" button to initiate token authentication.
+### 3. **Configure Authentication**
+- Enter **Emporia email and password**.
+- Click **"Authenticate"** to initiate **token-based authentication**.
 
-4. **Discover Devices**:
-   - Use the "Discover Devices" option to find Emporia devices associated with your account.
-   - Select devices and create parent and child devices in Hubitat.
+### 4. **Discover Devices**
+- Click **"Discover Devices"** to find Emporia Vue devices.
+- Select devices to **import as Parent and Child Devices**.
 
-5. **Configure Data Retrieval**:
-   - Choose retrieval frequency, energy units (e.g., KilowattHours or Dollars), and date format.
-   - Save changes to apply the settings.
+### 5. **Configure Data Retrieval**
+- Choose **retrieval frequency**, **energy units**, and **date format**.
+- Click **Save Settings**.
 
 ## Usage
 
 ### Authentication
-- **Authenticate**: Initiate token-based authentication using your Emporia credentials.
-- **Token Refresh**: Tokens are automatically refreshed 5 minutes before expiration.
+- **Authenticate**: Login using **Emporia credentials**.
+- **Token Refresh**: Tokens **automatically refresh** 5 minutes before expiration.
 
 ### Device Management
-- **Discover Devices**: Finds and lists available Emporia devices.
-- **Create/Update/Delete Devices**: Adds selected devices as parent and create a child device for every Circuit in Hubitat. As of version 1.0.2, devices will be added, updated or deleted to match the circuits defined in the Emporia app.
+- **Discover Devices**: Lists available **Emporia Vue** devices.
+- **Create/Update/Delete Devices**:
+  - **Adds new circuits** detected.
+  - **Updates existing circuits** if changed in the Emporia app.
+  - **Removes orphaned circuits** that no longer exist.
+
+### Device Labeling
+- Devices now include **their parent device** in their **label** to prevent **naming conflicts** in **InfluxDB/Grafana**.
+- **Example Naming Updates**:
+  - **Before**: `"Main"`
+  - **After**: `"Emp-406720-Main"` and `"Emp-430515-Main"`  
+- Labels are **automatically updated**.
 
 ### Data Retrieval
-- **Scheduled Retrieval**: Retrieves data at the configured frequency.
-- **Manual Retrieval**: Use the "Refresh" button on child devices to trigger data fetch for all devices under the same parent.
+- **Scheduled Retrieval**: Runs automatically at **configured intervals**.
+- **Manual Retrieval**: Click **"Refresh"** on a **child device** to trigger an update.
 
-### Attributes
-The integration updates the following attributes on child devices:
-- `usage`: Energy usage value returned from the API.
-- `usagePercentage`: Percentage of the total energy usage.
-- `power`: Calculated power based on `usage` and `retrievalFrequency`.
-- `energy`: Energy value, derived directly from `usage`.
-- `powerUnit`: Unit of power (e.g., Watts).
-- `energyUnit`: Configurable unit for energy (e.g., KilowattHours or Dollars).
-- `retrievalFrequency`: Data retrieval interval.
-- `lastUpdated`: Timestamp of the last update.
+## Attributes
+
+Each **child device** updates with the following attributes:
+
+| Attribute           | Description |
+|--------------------|-------------|
+| **usage**          | Energy consumption in the last interval |
+| **usagePercentage** | Share of total energy usage |
+| **power**         | Instantaneous power consumption |
+| **energy**        | Accumulated energy consumption |
+| **powerUnit**     | Unit of power (e.g., Watts) |
+| **energyUnit**    | Configurable unit (KilowattHours/Dollars) |
+| **retrievalFrequency** | Data retrieval interval |
+| **lastUpdated**   | Timestamp of the last update |
 
 ## Settings
 
 ### Emporia Account Settings
-- Email: Your Emporia account email.
-- Password: Your Emporia account password.
+- **Email**: Your Emporia account email.
+- **Password**: Your Emporia account password.
 
 ### Data Retrieval Settings
-- **Retrieval Frequency**: Interval for data retrieval (`1MIN`, `15MIN`, `1H`, `1D`, `1W`).
-- **Energy Unit**: Choose between `KilowattHours` or `Dollars`.
-- **Date Format**: Select between `yyyy-MM-dd HH:mm:ss` or `dd-MM-yyyy HH:mm:ss`.
+- **Retrieval Frequency**: `1MIN`, `15MIN`, `1H`, `1D`, `1W`.
+- **Energy Unit**: `KilowattHours` or `Dollars`.
+- **Date Format**: `yyyy-MM-dd HH:mm:ss` or `dd-MM-yyyy HH:mm:ss`.
 
 ### Debug Logging
-- **Enable Debug Logging**: Option to enable or disable detailed logs (default: enabled).
+- **Enable Debug Logging**: Toggle logs **on/off**.
 
 ## Debugging and Logs
-Logs provide detailed information about authentication, device creation, data retrieval, and attribute updates. Use the debug logging option to troubleshoot any issues during setup or operation.
 
-## Example Logs
-- **Successful Authentication**:
-  ```
-  app:2242025-01-12 10:10:10.123info Authentication successful. Token expires at 2025-01-12T15:10:10Z.
-  ```
-- **Data Fetch**:
-  ```
-  app:2242025-01-12 11:11:11.123info Fetching data for all monitored devices...
-  app:2242025-01-12 11:11:11.456debug Updated child device EmporiaVue123456-1: usage=1.23, power=1230, energy=1.23, powerUnit=Watt.
-  ```
-- **Device Discovery**:
-  ```
-  app:2242025-01-12 12:12:12.123info Discovered devices: 3
-  ```
+Logs provide insights into **authentication**, **device creation**, **data retrieval**, and **attribute updates**. 
+
+### Example Logs
+#### Successful Authentication
+app:2242025-03-15 10:10:10.123info Authentication successful. Token expires at 2025-03-15T15:10:10Z.
+
+shell
+Copy
+Edit
+#### Data Fetch
+app:2242025-03-15 11:11:11.123info Fetching data for all monitored devices... app:2242025-03-15 11:11:11.456debug Updated child device EmporiaVue406720-2: usage=0.0153, power=921, energy=0.02, powerUnit=Watt.
+
+shell
+Copy
+Edit
+#### Device Discovery
+app:2242025-03-15 12:12:12.123info Discovered 4 Emporia devices.
+
+markdown
+Copy
+Edit
 
 ## Known Limitations
-- Refreshing a child device triggers data retrieval for all devices under the same parent.
-- Energy units are limited to `KilowattHours` and `Dollars` for simplicity.
+- **Refreshing a child device** triggers data retrieval for **all devices under the same parent**.
+- **InfluxDB** exports **device labels**, which is now addressed by **renaming** devices during creation.
 
 ## Future Enhancements
-- Add support for more energy units and retrieval intervals.
-- Optimize logging verbosity for better user experience.
+- **Support for additional energy units** beyond KilowattHours/Dollars.
+- **Optimize logging verbosity** for a better experience.
 
 ## Support
-For questions or issues, please contact the repository maintainer or submit an issue on GitHub.
+For **questions or issues**, submit an **issue** on GitHub.
 
----
-
-### Author
+## Author
 **Amit Halperin**
 
+## What’s New?
+✅ **Support for multiple (even nested) EmporiaVue devices**
+✅ **Automatic Device Labeling**  
+✅ **Ensures Unique Names in InfluxDB/Grafana**  
+✅ **Improved Debug Logging & Device Updates**  
+
+This version ensures **better compatibility** with **InfluxDB, Grafana**, and **Hubitat Dashboard**, making energy monitoring more **accurate and intuitive**.
