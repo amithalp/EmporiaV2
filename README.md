@@ -41,7 +41,8 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
 ### Authentication
 - **Authenticate**: Login using **Emporia credentials**.
 - **Token Refresh**: Tokens **automatically refresh** 5 minutes before expiration.
-
+- As of app version 1.0.5, the app will auto reschedule refresh token in case of failure.
+  
 ### Device Management
 - **Discover Devices**: Lists available **Emporia Vue** devices.
 - **Create/Update/Delete Devices**:
@@ -132,5 +133,6 @@ For **questions or issues**, submit an **issue** on GitHub.
 ✅ **Automatic Device Labeling**  
 ✅ **Ensures Unique Names in InfluxDB/Grafana**  
 ✅ **Improved Debug Logging & Device Updates**  
+✅ **Rescheduling token refresh in case of failure**
 
 This version ensures **better compatibility** with **InfluxDB, Grafana**, and **Hubitat Dashboard**, making energy monitoring more **accurate and intuitive**.
