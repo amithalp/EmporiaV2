@@ -141,6 +141,13 @@ def initialize() {
     } else {
         log.warn "Retrieval frequency not set. Skipping data retrieval scheduling."
     }
+    // Initialize refresh failure tracking (NEW)
+    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
+    state.refreshFailureCount = state.refreshFailureCount ?: 0
+    state.authFailureCount = state.authFailureCount ?: 0
+    state.manualAuthRequired = state.manualAuthRequired ?: false
+    
+    if (state.debugLog) log.debug "Refresh tracking initialized: lastAttempt=${state.lastRefreshAttempt}, failureCount=${state.refreshFailureCount}"
 }
 
 
