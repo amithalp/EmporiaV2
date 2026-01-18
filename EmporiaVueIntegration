@@ -114,7 +114,7 @@ def installed() {
 
 def updated() {
     log.info "EmporiaVueIntegration app updated"
-    unschedule()
+    unschedule(fetchData)  // Only unschedule the data fetch job
     initialize()
 }
 
