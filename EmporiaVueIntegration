@@ -16,12 +16,13 @@
  *   Modifcation History
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
- *   2025-01-14     amithalp	    version 1.0.1 - Fix re-sechduling upon update
- *   2025-02-06		amithalp		version 1.0.2 - Add functionality to update and delete devices in Hubitat based on changes in the Emporia side (circuit name, merging and unmerging circuits).
- * 													This will be done only when the user click the Create/Update/Delete Hubitat Devices button
- * 	 2025-02-15		amithalp		version 1.0.3 - Minor layout improvements
- *   2025-03-16		amithalp		version 1.0.4 - Add support for multiple and nested devices. Device labeling to support multiple Emporia devices
- * 	 2025-03-25		amithalp		version 1.0.5 - Add rescheuling for refreshToken method if refresh is failed
+ *   2025-01-14     amithalp        version 1.0.1 - Fix re-sechduling upon update
+ *   2025-02-06     amithalp        version 1.0.2 - Add functionality to update and delete devices in Hubitat based on changes in the Emporia side (circuit name, merging and unmerging circuits).
+ *                                       This will be done only when the user click the Create/Update/Delete Hubitat Devices button
+ *   2025-02-15     amithalp        version 1.0.3 - Minor layout improvements
+ *   2025-03-16     amithalp        version 1.0.4 - Add support for multiple and nested devices. Device labeling to support multiple Emporia devices
+ *   2025-03-25     amithalp        version 1.0.5 - Add rescheuling for refreshToken method if refresh is failed
+ *   2026-01-18     amithalp        version 1.1.0 - Add automatic token refresh on 401, network-aware retry/backoff, fetch retry throttling, updated authenticate to reset manual auth flags, and schedule fix.
  *****************************************************************************************************************/
 /**
  * EmporiaVueIntegration
@@ -31,7 +32,7 @@
  */
 
 import groovy.json.*
-static String version()	{  return '1.0.5' }
+static String version()    {  return '1.1.0' }
 definition(
     name: "EmporiaVueIntegration",
     namespace: "amithalp",
@@ -40,8 +41,17 @@ definition(
     category: "Utility",
     iconUrl: "",
     iconX2Url: "",
-    //version: "1.0.5" 
+    //version: "1.1.0" 
 )
+
+// NOTE: Changes in v1.1.0
+// - Automatic token refresh when API returns HTTP 401
+// - Throttled refresh attempts to avoid retry storms (minimum 60s)
+// - Differentiation between network errors and auth failures
+// - Backoff strategy for network failures (5-minute retry)
+// - Cap and manual-auth-required state for invalid refresh tokens
+// - updated() now only unschedules fetchData instead of all scheduled jobs
+// - authenticate() resets manualAuthRequired and failure counters on success
 
 preferences {
     page(name: "mainPage")
