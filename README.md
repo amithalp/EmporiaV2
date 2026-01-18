@@ -136,3 +136,11 @@ For **questions or issues**, submit an **issue** on GitHub.
 ✅ **Rescheduling token refresh in case of failure**
 
 This version ensures **better compatibility** with **InfluxDB, Grafana**, and **Hubitat Dashboard**, making energy monitoring more **accurate and intuitive**.
+### v1.1.0 (2026-01-18)
+- Automatic token refresh when API returns HTTP 401, with an immediate retry of the failed fetch once the refresh succeeds.
+- Throttled refresh attempts to avoid rapid retry storms (minimum 60 seconds between automatic refresh attempts).
+- Differentiation between network/server failures and authentication failures — network outages won't force manual authentication and will recover automatically when connectivity returns.
+- Backoff strategy for network-related refresh failures (retry every 5 minutes).
+- Cap authentication failure retries (5 attempts) before requiring manual Authenticate and setting state.authStatus accordingly.
+- Updated authenticate() to clear manual-auth flags and failure counters on success.
+- Updated scheduling behavior: updated() now unschedules only the data retrieval job instead of all scheduled jobs.
