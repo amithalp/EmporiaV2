@@ -15,34 +15,37 @@
  *   Modifcation History
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *   2026-01-19     amithalp        version 1.0.1 - Add version tracking, clarify refresh behavior, minor safety guards.
  *****************************************************************************************************************
  * Emporia Circuit Driver
- * 
+ *
  * This driver acts as the child device for individual circuits monitored by Emporia Vue.
  * - Receives and displays Usage and Energy Unit data.
  */
+
+static String version() { return "1.0.1" }
 
 metadata {
     definition(
         name: "Emporia Circuit Driver",
         namespace: "amithalp",
         author: "Amit Halperin",
-        importUrl: "",
-        version: "1.0.0"
+        importUrl: ""
     ) {
         capability "PowerMeter"
         capability "EnergyMeter"
         capability "Refresh"
 
         attribute "usagePercentage", "number" // For percentage of total
-        attribute "usage", "string" //raw usage data
-        attribute "energyUnit", "string" 
-        attribute "lastUpdated", "string" 
+        attribute "usage", "string"           // raw usage data (string to support $ when energyUnit=Dollars)
+        attribute "energyUnit", "string"
+        attribute "lastUpdated", "string"
         attribute "retrievalFrequency", "string"
-        attribute "power" , "number" 
-        attribute "energy" , "number" 
-        attribute "powerUnit" , "string" 
-                
+        attribute "power", "number"
+        attribute "energy", "number"
+        attribute "powerUnit", "string"
+
+        attribute "driverVersion", "string"
     }
 }
 
@@ -51,31 +54,44 @@ preferences {
 }
 
 def installed() {
-    log.info "Emporia Circuit Driver installed for device ${device.name}"
+    log.info "Emporia Circuit Driver installed for device ${device.displayName}"
     initialize()
 }
 
 def updated() {
-    log.info "Emporia Circuit Driver updated for device ${device.name}"
+    log.info "Emporia Circuit Driver updated for device ${device.displayName}"
     initialize()
 }
 
 def initialize() {
+    sendEvent(name: "driverVersion", value: version())
+
     if (logEnable) {
-        log.debug "Initializing Emporia Circuit Driver for ${device.name}"
+        log.debug "Initializing Emporia Circuit Driver v${version()} for ${device.displayName}"
         runIn(7200, toggleDebugLogging) // Disable debug logging after 120 minutes
     }
 }
 
 def toggleDebugLogging() {
-    log.warn "Disabling debug logging for ${device.name} after 120 minutes."
+    log.warn "Disabling debug logging for ${device.displayName} after 120 minutes."
     device.updateSetting("logEnable", [value: "false", type: "bool"])
 }
 
-//case a user click Refresh on the child device page this will trigger the fetchData method in the app for all devices assosiated to the same parent device
+/**
+ * If a user clicks Refresh on the child device:
+ * This triggers parent.refreshData() which refreshes the *parent Emporia deviceGid*
+ * (i.e., the EmporiaVue<gid> parent device) — not all devices globally.
+ */
 def refresh() {
-    if (logEnable) log.debug "Refresh called on ${device.name}"
-    parent?.refreshData()
+    if (logEnable) log.debug "Refresh called on ${device.displayName}"
+
+    try {
+        if (parent && parent.metaClass?.respondsTo(parent, "refreshData")) {
+            parent.refreshData()
+        } else {
+            log.warn "Parent driver refreshData() not available for ${device.displayName}"
+        }
+    } catch (e) {
+        log.error "Error while requesting refresh from ${device.displayName}: ${e}"
+    }
 }
-
-
