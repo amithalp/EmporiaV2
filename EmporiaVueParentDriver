@@ -16,22 +16,21 @@
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
  *   2026-01-19     amithalp        version 1.1.0 - Clarify refreshData logging (refreshes single deviceGid), add refreshAllDevices() helper.
+ *   2026-01-19     amithalp        version 1.1.1 - Add version() helper + metadata version, safer gid parsing, fix "lastUpdate" attr naming consistency, add setRetrievalFrequency().
  *****************************************************************************************************************
  * EmporiaVueParentDriver
- * 
+ *
  * This driver acts as the parent device for Emporia Vue integrations.
  * - Manages child devices corresponding to monitored circuits.
- * - Handles API communication for data retrieval.
- * - Supports refreshing data and updating child devices.
+ * - Supports refreshing data and updating child devices via the parent app.
  * - Fetches and stores location-related attributes.
- *     Change summary (v1.1.0):
- * - Fix misleading log message in refreshData(): clarify it refreshes a single deviceGid (or the parent device if none specified).
- * - Add optional helper refreshAllDevices() to request full app-level refresh (calls app.fetchData() with no GID).
- * 
+ *
  * Author: Amit Halperin
  */
 
 import groovy.json.*
+
+static String version() { return "1.1.1" }
 
 metadata {
     definition(
@@ -46,7 +45,7 @@ metadata {
 
         command "fetchLocationData"
         command "fetchDeviceData"
-        command "refreshAllDevices"   // NEW: expose helper in UI if desired
+        command "refreshAllDevices"
 
         attribute "locationDeviceName", "string"
         attribute "locationZipCode", "string"
@@ -64,9 +63,13 @@ metadata {
         attribute "locationNumElectricCars", "number"
         attribute "locationNumPeople", "number"
         attribute "locationSwimmingPool", "string"
+
+        // FIX: your code uses "lastUpdate" event name, so keep attribute as lastUpdate (not lastUpdateD)
         attribute "lastUpdate", "string"
+
         attribute "energyUnit", "string"
         attribute "retrievalFrequency", "string"
+        attribute "driverVersion", "string"
     }
 }
 
@@ -76,33 +79,44 @@ preferences {
 }
 
 def installed() {
-    log.info "EmporiaVueParentDriver installed for device ${device.name}"
+    log.info "EmporiaVueParentDriver installed for device ${device.displayName}"
     initialize()
     fetchLocationData()
 }
 
 def updated() {
-    log.info "EmporiaVueParentDriver updated for device ${device.name}"
+    log.info "EmporiaVueParentDriver updated for device ${device.displayName}"
     initialize()
     fetchLocationData()
 }
 
 def initialize() {
+    sendEvent(name: "driverVersion", value: version())
+
     if (logEnable) {
-        log.debug "Initializing EmporiaVueParentDriver for ${device.name}"
+        log.debug "Initializing EmporiaVueParentDriver v${version()} for ${device.displayName}"
         runIn(1800, toggleDebugLogging)
     }
     state.lastUpdate = null
 }
 
 def toggleDebugLogging() {
-    log.warn "Disabling debug logging for ${device.name} after 30 minutes."
+    log.warn "Disabling debug logging for ${device.displayName} after 30 minutes."
     device.updateSetting("logEnable", [value: "false", type: "bool"])
 }
 
 def refresh() {
-    if (logEnable) log.debug "Refreshing data for ${device.name}"
+    if (logEnable) log.debug "Refreshing data for ${device.displayName}"
     fetchDeviceData()
+}
+
+/**
+ * Helper to extract numeric Emporia deviceGid from deviceNetworkId
+ * Expected DNI: EmporiaVue<deviceGid>
+ */
+private String getThisDeviceGid() {
+    def dni = device?.deviceNetworkId?.toString() ?: ""
+    return dni.startsWith("EmporiaVue") ? dni.substring("EmporiaVue".length()) : dni
 }
 
 /**
@@ -110,7 +124,7 @@ def refresh() {
  * Always refresh THIS parent’s numeric deviceGid unless an explicit one is passed.
  */
 def refreshData(deviceGid = null) {
-    def gid = deviceGid ?: device.deviceNetworkId.replace("EmporiaVue", "")
+    def gid = (deviceGid != null) ? deviceGid.toString() : getThisDeviceGid()
     log.info "Refreshing data for deviceGid: ${gid}"
 
     try {
@@ -126,7 +140,7 @@ def refreshData(deviceGid = null) {
 
 /**
  * Optional helper: refresh all monitored devices
- * Safe now only if the app’s fetchData(null) correctly uses numeric GIDs list (v1.1.1 above).
+ * Safe if the app’s fetchData(null) uses numeric GIDs list.
  */
 def refreshAllDevices() {
     log.info "Requesting full refresh of all monitored devices via app.fetchData()"
@@ -147,7 +161,7 @@ def fetchDeviceData() {
         return
     }
 
-    def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
+    def deviceGid = getThisDeviceGid()
     if (logEnable) log.debug "Requesting data fetch for device GID: ${deviceGid}"
     parent.fetchData(deviceGid)
 }
@@ -164,7 +178,7 @@ def fetchLocationData() {
         return
     }
 
-    def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
+    def deviceGid = getThisDeviceGid()
     def host = "https://api.emporiaenergy.com/"
     def command = "devices/${deviceGid}/locationProperties"
 
@@ -177,7 +191,7 @@ def fetchLocationData() {
         httpGet(params) { resp ->
             if (resp.status == 200) {
                 def locationData = resp.data
-                if (logEnable) log.debug "Fetched location data: ${locationData}"
+                if (logEnable) log.debug "Fetched location data for ${deviceGid}"
 
                 sendEvent(name: "locationDeviceName", value: locationData.deviceName ?: "Unknown")
                 sendEvent(name: "locationZipCode", value: locationData.zipCode ?: "Unknown")
@@ -192,14 +206,14 @@ def fetchLocationData() {
                 sendEvent(name: "locationHeatSource", value: locationData.locationInformation?.heatSource ?: "Unknown")
                 sendEvent(name: "locationSqFt", value: locationData.locationInformation?.locationSqFt ?: "Unknown")
                 sendEvent(name: "locationType", value: locationData.locationInformation?.locationType ?: "Unknown")
-                sendEvent(name: "locationNumElectricCars", value: locationData.locationInformation?.numElectricCars?.toInteger() ?: 0)
-                sendEvent(name: "locationNumPeople", value: locationData.locationInformation?.numPeople?.toInteger() ?: 0)
+                sendEvent(name: "locationNumElectricCars", value: (locationData.locationInformation?.numElectricCars ?: 0).toInteger())
+                sendEvent(name: "locationNumPeople", value: (locationData.locationInformation?.numPeople ?: 0).toInteger())
                 sendEvent(name: "locationSwimmingPool", value: locationData.locationInformation?.swimmingPool ?: "Unknown")
 
                 state.lastUpdate = new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'")
                 sendEvent(name: "lastUpdate", value: state.lastUpdate)
 
-                log.info "Location data successfully updated for device ${device.deviceNetworkId}"
+                log.info "Location data successfully updated for deviceGid ${deviceGid}"
             } else {
                 log.error "Error fetching location data. HTTP status: ${resp.status}"
             }
@@ -210,7 +224,7 @@ def fetchLocationData() {
 }
 
 def setEnergyUnit(String unit) {
-    if (logEnable) log.debug "Setting energy unit to ${unit} for ${device.name}"
+    if (logEnable) log.debug "Setting energy unit to ${unit} for ${device.displayName}"
 
     def validUnits = ["KilowattHours", "Dollars"]
     if (!validUnits.contains(unit)) {
@@ -220,11 +234,12 @@ def setEnergyUnit(String unit) {
 
     state.energyUnit = unit
     sendEvent(name: "energyUnit", value: unit)
-
-    if (logEnable) log.info "Energy unit set to ${unit} for ${device.name}"
+    if (logEnable) log.info "Energy unit set to ${unit} for ${device.displayName}"
 }
 
-
-
-
-
+def setRetrievalFrequency(String freq) {
+    if (freq == null) return
+    state.retrievalFrequency = freq
+    sendEvent(name: "retrievalFrequency", value: freq)
+    if (logEnable) log.debug "Retrieval frequency set to ${freq} for ${device.displayName}"
+}
