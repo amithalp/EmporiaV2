@@ -129,14 +129,16 @@ def updated() {
 }
 
 def initialize() {
-    state.debugLog = settings.debugLog != null ? settings.debugLog : true // Use the value from settings or default to true
+    state.debugLog = settings.debugLog != null ? settings.debugLog : true
     if (state.debugLog) log.debug "Debug logging is ${state.debugLog ? 'enabled' : 'disabled'}."
 
     log.info "Initializing EmporiaVueIntegration app"
     state.authStatus = state.authStatus ?: "Waiting for user to authenticate..."
     state.discoveredDevices = state.discoveredDevices ?: []
 
-    // Schedule token refresh if authentication is complete
+    // NEW: numeric Emporia GIDs list (strings)
+    state.emporiaDeviceGids = state.emporiaDeviceGids ?: []
+
     if (state.tokenExpiry) {
         if (state.debugLog) log.debug "Token expiry detected. Scheduling token refresh."
         scheduleTokenRefresh()
@@ -144,22 +146,19 @@ def initialize() {
         if (state.debugLog) log.debug "No token expiry found. Skipping token refresh scheduling."
     }
 
-    // Ensure data retrieval is scheduled - fixed in version 1.0.1
     if (settings.retrievalFrequency) {
         if (state.debugLog) log.debug "Scheduling data retrieval with frequency: ${settings.retrievalFrequency}."
         scheduleDataRetrieval()
     } else {
         log.warn "Retrieval frequency not set. Skipping data retrieval scheduling."
     }
-    // Initialize refresh failure tracking (NEW)
+
+    // Existing v1.1.0 tracking
     state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
     state.refreshFailureCount = state.refreshFailureCount ?: 0
     state.authFailureCount = state.authFailureCount ?: 0
     state.manualAuthRequired = state.manualAuthRequired ?: false
-    
-    if (state.debugLog) log.debug "Refresh tracking initialized: lastAttempt=${state.lastRefreshAttempt}, failureCount=${state.refreshFailureCount}"
 }
-
 
 
 def uninstalled() {
@@ -428,18 +427,21 @@ def updateSelectedDevices() {
 def createSelectedDevices() {
     state.validChildDeviceIds = []
     def selectedDevices = state.discoveredDevices.findAll { settings["selectedDevice_${it.deviceGid}"] == true }
-    
+
     if (!selectedDevices) {
         log.warn "No devices selected for creation."
         return
     }
 
+    // NEW: rebuild numeric list from selections
+    state.emporiaDeviceGids = selectedDevices.collect { it.deviceGid.toString() }
+
     state.parentDevices = selectedDevices.collect { device ->
         def deviceId = "EmporiaVue${device.deviceGid}"
         def parentDevice = getChildDevice(deviceId) ?: addChildDevice(
-            "amithalp", 
-            "EmporiaVueParentDriver", 
-            deviceId, 
+            "amithalp",
+            "EmporiaVueParentDriver",
+            deviceId,
             [name: deviceId, isComponent: false]
         )
 
@@ -454,13 +456,12 @@ def createSelectedDevices() {
                     if (nestedChannel.usage != null && nestedChannel.name) {
                         def childDeviceId = "${deviceId}-${nestedChannel.channelNum ?: nestedChannel.name.hashCode()}"
                         validChildDeviceIds << childDeviceId
+
                         def childName = nestedChannel.name
                         def formattedLabel = "Emp-${device.deviceGid}-${childName} (${nestedChannel.channelNum ?: 'N/A'})"
-                        
-                        def existingChildDevice = parentDevice.getChildDevice(childDeviceId)
 
+                        def existingChildDevice = parentDevice.getChildDevice(childDeviceId)
                         if (!existingChildDevice) {
-                            // Create new child device with formatted label
                             parentDevice.addChildDevice(
                                 "amithalp",
                                 "Emporia Circuit Driver",
@@ -469,7 +470,6 @@ def createSelectedDevices() {
                             )
                             log.info "Created child device: ${childDeviceId} with label: ${formattedLabel}"
                         } else {
-                            // Update existing child device label if needed
                             if (existingChildDevice.getLabel() != formattedLabel) {
                                 existingChildDevice.setLabel(formattedLabel)
                                 log.info "Updated child device label: ${childDeviceId} -> ${formattedLabel}"
@@ -483,12 +483,15 @@ def createSelectedDevices() {
 
             state.validChildDeviceIds = (state.validChildDeviceIds ?: []) + validChildDeviceIds
         }
+
         deviceId
     }
 
     runIn(20, deleteOrphanedDevices)
-}
 
+    // Optional but recommended: ensure scheduling exists once parents exist
+    if (settings.retrievalFrequency) scheduleDataRetrieval()
+}
 
 def deleteOrphanedDevices() {
     if (!state.validChildDeviceIds || state.validChildDeviceIds.isEmpty()) {
@@ -561,13 +564,8 @@ def updateRetrievalSettings() {
     if (settings.retrievalFrequency && settings.energyUnit) {
         log.info "Updating data retrieval settings: Frequency=${settings.retrievalFrequency}, Energy Unit=${settings.energyUnit}"
 
-        // Unschedule existing jobs
-        unschedule()
-
-        // Schedule new data retrieval based on frequency
+        unschedule(fetchData)     // FIX: do not cancel token refresh jobs
         scheduleDataRetrieval()
-
-        // Update parent devices with new energy unit
         updateParentDevicesEnergyUnit(settings.energyUnit)
 
         state.authStatus = "Data retrieval settings updated successfully."
@@ -577,31 +575,31 @@ def updateRetrievalSettings() {
     }
 }
 
+
 def scheduleDataRetrieval() {
-    if (state.parentDevices?.isEmpty()) {
-        log.warn "No parent devices found. Skipping data retrieval scheduling."
+    if (!state.emporiaDeviceGids || state.emporiaDeviceGids.isEmpty()) {
+        log.warn "No Emporia deviceGids found. Skipping data retrieval scheduling."
         return
     }
 
     try {
-        unschedule(fetchData) // Unschedule any previous calls
+        unschedule(fetchData)
 
-        // Determine schedule based on frequency
         switch (settings.retrievalFrequency) {
             case "1MIN":
-                schedule("0 * * * * ?", fetchData) // Every minute
+                schedule("0 * * * * ?", fetchData)
                 break
             case "15MIN":
-                schedule("0 */15 * * * ?", fetchData) // Every 15 minutes
+                schedule("0 */15 * * * ?", fetchData)
                 break
             case "1H":
-                schedule("0 0 * * * ?", fetchData) // Every hour
+                schedule("0 0 * * * ?", fetchData)
                 break
             case "1D":
-                schedule("0 0 0 * * ?", fetchData) // Daily at midnight
+                schedule("0 0 0 * * ?", fetchData)
                 break
             case "1W":
-                schedule("0 0 0 ? * 1", fetchData) // Weekly on Sundays
+                schedule("0 0 0 ? * 1", fetchData)
                 break
             default:
                 log.error "Unsupported retrieval frequency: ${settings.retrievalFrequency}"
@@ -629,15 +627,16 @@ def updateParentDevicesEnergyUnit(unit) {
 def fetchData(deviceGid = null) {
     log.info deviceGid ? "Fetching data for device GID: ${deviceGid}" : "Fetching data for all monitored devices..."
 
-    def targetDevices = deviceGid ? [deviceGid] : state.parentDevices
-    if (!targetDevices || targetDevices.isEmpty()) {
+    // Use numeric GIDs only
+    def targetGids = deviceGid ? [deviceGid.toString()] : (state.emporiaDeviceGids ?: [])
+    if (!targetGids || targetGids.isEmpty()) {
         log.warn "No monitored devices found. Skipping data fetch."
         return
     }
 
     def instant = new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
     def host = "https://api.emporiaenergy.com/"
-    def deviceGids = targetDevices.join("+")
+    def deviceGids = targetGids.join("+")
     def command = "AppAPI?apiMethod=getDeviceListUsages&deviceGids=${deviceGids}&instant=${instant}&scale=${settings.retrievalFrequency}&energyUnit=${settings.energyUnit}"
 
     def params = [
@@ -662,13 +661,11 @@ def fetchData(deviceGid = null) {
                         log.warn "Parent device ${parentDeviceId} not found. Skipping."
                         return
                     }
-
-                    // Process channel usages recursively including nested devices
                     processChannelUsages(parentDevice, device.channelUsages, parentDeviceId)
                 }
+
                 log.info "Data fetch and update completed successfully."
             } else if (resp.status == 401) {
-                // Authentication failure - try to refresh token and retry (throttled)
                 log.warn "Received HTTP 401 from API. Will attempt token refresh and retry (throttled)."
                 attemptRefreshAndRetry(deviceGid)
             } else {
@@ -676,23 +673,18 @@ def fetchData(deviceGid = null) {
             }
         }
     } catch (e) {
-        // Classify network/server errors vs other errors (don't mark auth required for network outages)
         def msg = e?.message?.toString() ?: ""
         def lower = msg.toLowerCase()
-
-        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') || lower.contains('timeout') || lower.contains('connection refused')
+        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') ||
+                             lower.contains('timeout') || lower.contains('connection refused')
         if (isNetworkError) {
             log.warn "Network error during data fetch (will keep scheduled fetch running): ${msg}"
-            // Do NOT set auth required - scheduled fetch will retry when connectivity returns
-            return
-        } else {
-            log.error "Error during data fetch: ${msg}"
-            // Keep scheduled fetch running; only token refresh flow determines manual auth requirement
             return
         }
+        log.error "Error during data fetch: ${msg}"
+        return
     }
 }
-
 
 def updateChildDeviceAttributes(childDevice, channelData) {
     def energyUnit = settings.energyUnit ?: "KilowattHours"
