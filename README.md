@@ -12,6 +12,11 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
   - `usage`, `usagePercentage`, `power`, `energy`
   - `powerUnit`, `energyUnit`, `retrievalFrequency`, `lastUpdated`
 
+## Architecture Notes
+- The Hubitat App owns authentication, scheduling, and API calls.
+- Parent devices represent Emporia hardware units (deviceGid).
+- Child devices represent individual circuits and never call the API directly.
+
 ## Installation
 
 ### 1. **Add the App and Drivers to Hubitat**
@@ -42,6 +47,11 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
 - **Authenticate**: Login using **Emporia credentials**.
 - **Token Refresh**: Tokens **automatically refresh** 5 minutes before expiration.
 - As of app version 1.0.5, the app will auto reschedule refresh token in case of failure.
+- As of app version 1.1.1, if internet or power is lost for several hours, the app will automatically recover:
+  - Network outages do NOT require re-authentication.
+  - Token refresh is retried with backoff.
+  - Manual Authenticate is required only if the refresh token is revoked or invalid.
+
   
 ### Device Management
 - **Discover Devices**: Lists available **Emporia Vue** devices.
@@ -59,7 +69,7 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
 
 ### Data Retrieval
 - **Scheduled Retrieval**: Runs automatically at **configured intervals**.
-- **Manual Retrieval**: Click **"Refresh"** on a **child device** to trigger an update.
+- **Manual Retrieval**: Click **"Refresh"** on a **child device** to refresh its parent Emporia device.
 
 ## Attributes
 
@@ -98,24 +108,14 @@ Logs provide insights into **authentication**, **device creation**, **data retri
 #### Successful Authentication
 app:2242025-03-15 10:10:10.123info Authentication successful. Token expires at 2025-03-15T15:10:10Z.
 
-shell
-Copy
-Edit
 #### Data Fetch
 app:2242025-03-15 11:11:11.123info Fetching data for all monitored devices... app:2242025-03-15 11:11:11.456debug Updated child device EmporiaVue406720-2: usage=0.0153, power=921, energy=0.02, powerUnit=Watt.
 
-shell
-Copy
-Edit
 #### Device Discovery
 app:2242025-03-15 12:12:12.123info Discovered 4 Emporia devices.
 
-markdown
-Copy
-Edit
-
 ## Known Limitations
-- **Refreshing a child device** triggers data retrieval for **all devices under the same parent**.
+- **Refreshing a child device** triggers data retrieval for its parent Emporia device only (not all devices).
 - **InfluxDB** exports **device labels**, which is now addressed by **renaming** devices during creation.
 
 ## Future Enhancements
@@ -144,3 +144,11 @@ This version ensures **better compatibility** with **InfluxDB, Grafana**, and **
 - Cap authentication failure retries (5 attempts) before requiring manual Authenticate and setting state.authStatus accordingly.
 - Updated authenticate() to clear manual-auth flags and failure counters on success.
 - Updated scheduling behavior: updated() now unschedules only the data retrieval job instead of all scheduled jobs.
+### v1.1.1 (2026-01-19)
+- Hardened recovery from temporary network and power outages.
+- Automatic data fetch resumes once connectivity returns (no manual Authenticate needed).
+- Explicit numeric Emporia deviceGid tracking to prevent stalled fetch scheduling.
+- Safer refresh behavior:
+  - Child device refresh updates its parent Emporia device only.
+  - Optional full refresh available from the parent device.
+- Added driver version tracking to Parent and Child drivers.
