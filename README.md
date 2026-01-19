@@ -144,3 +144,10 @@ This version ensures **better compatibility** with **InfluxDB, Grafana**, and **
 - Cap authentication failure retries (5 attempts) before requiring manual Authenticate and setting state.authStatus accordingly.
 - Updated authenticate() to clear manual-auth flags and failure counters on success.
 - Updated scheduling behavior: updated() now unschedules only the data retrieval job instead of all scheduled jobs.
+
+#### Testing v1.1.0
+To test the new features:
+1. **Authentication success**: After clicking Authenticate, verify that `state.authStatus` shows success message and `state.manualAuthRequired` is `false`.
+2. **401 triggers auto-refresh**: Force a 401 response (e.g., by waiting for token expiry or manually invalidating token). Confirm the app automatically refreshes tokens and retries the failed fetch within ~1 minute.
+3. **Network outage recovery**: Simulate a network outage (e.g., disconnect network). Confirm data fetch logs network warnings without requiring manual authentication. When connectivity returns, confirm automatic recovery.
+4. **Invalid refresh token**: Revoke the refresh token or simulate a Cognito `NotAuthorizedException`. Confirm the auth failure counter increments, and after 5 auth failures, `state.manualAuthRequired` becomes `true` and logs instruct to manually Authenticate.
