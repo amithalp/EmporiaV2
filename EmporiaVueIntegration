@@ -1,5 +1,18 @@
 /* Todo list
-* None
+*  * FUTURE ENHANCEMENT – NOTIFICATIONS
+ *
+ * When authentication or data retrieval fails (e.g. repeated HTTP 401 responses
+ * or manualAuthRequired == true), the app currently relies on logs and UI status.
+ *
+ * Optional future improvements:
+ * 1) Send push / notification directly from the app when:
+ *    - manualAuthRequired becomes true
+ *    - data fetch has not succeeded for a configurable time window
+ * 2) Expose an app-level status attribute (via a virtual or parent device)
+ *    to allow Rule Machine or Notification app triggers.
+ *
+ * Notifications are intentionally not implemented yet to keep the core
+ * integration minimal and avoid alert fatigue.
 
 /*****************************************************************************************************************
  *  Raw Source: https://github.com/amithalp/EmporiaV2
