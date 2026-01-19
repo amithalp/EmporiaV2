@@ -15,6 +15,7 @@
  *   Modifcation History
  *   Date           Name            Change
  *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *   2026-01-19     amithalp        version 1.1.0 - Clarify refreshData logging (refreshes single deviceGid), add refreshAllDevices() helper.
  *****************************************************************************************************************
  * EmporiaVueParentDriver
  * 
@@ -23,6 +24,9 @@
  * - Handles API communication for data retrieval.
  * - Supports refreshing data and updating child devices.
  * - Fetches and stores location-related attributes.
+ *     Change summary (v1.1.0):
+ * - Fix misleading log message in refreshData(): clarify it refreshes a single deviceGid (or the parent device if none specified).
+ * - Add optional helper refreshAllDevices() to request full app-level refresh (calls app.fetchData() with no GID).
  * 
  * Author: Amit Halperin
  */
@@ -41,7 +45,9 @@ metadata {
         capability "EnergyMeter"
 
         command "fetchLocationData"
-        command "fetchDeviceData" // New command to fetch specific device data
+        command "fetchDeviceData"
+        command "refreshAllDevices"   // NEW: expose helper in UI if desired
+
         attribute "locationDeviceName", "string"
         attribute "locationZipCode", "string"
         attribute "locationTimeZone", "string"
@@ -59,7 +65,6 @@ metadata {
         attribute "locationNumPeople", "number"
         attribute "locationSwimmingPool", "string"
         attribute "lastUpdate", "string"
-        //attribute "powerUnit", "string"
         attribute "energyUnit", "string"
         attribute "retrievalFrequency", "string"
     }
@@ -85,7 +90,7 @@ def updated() {
 def initialize() {
     if (logEnable) {
         log.debug "Initializing EmporiaVueParentDriver for ${device.name}"
-        runIn(1800, toggleDebugLogging) // Disable debug logging after 30 minutes
+        runIn(1800, toggleDebugLogging)
     }
     state.lastUpdate = null
 }
@@ -100,17 +105,41 @@ def refresh() {
     fetchDeviceData()
 }
 
-//this method is called from a child device
-def refreshData() {
-    if (parent) {
-        def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
-        parent.fetchData(deviceGid)
-        log.info "Triggered data refresh for all devices under parent ${device.name}"
-    } else {
-        log.warn "No parent app found to trigger data refresh."
+/**
+ * Called from child devices: parent?.refreshData()
+ * Always refresh THIS parent’s numeric deviceGid unless an explicit one is passed.
+ */
+def refreshData(deviceGid = null) {
+    def gid = deviceGid ?: device.deviceNetworkId.replace("EmporiaVue", "")
+    log.info "Refreshing data for deviceGid: ${gid}"
+
+    try {
+        if (parent && parent.metaClass?.respondsTo(parent, 'fetchData')) {
+            parent.fetchData(gid)   // refresh a single device deterministically
+        } else {
+            log.warn "Parent app.fetchData() not available; cannot perform refresh."
+        }
+    } catch (e) {
+        log.error "Error during refreshData for deviceGid ${gid}: ${e}"
     }
 }
 
+/**
+ * Optional helper: refresh all monitored devices
+ * Safe now only if the app’s fetchData(null) correctly uses numeric GIDs list (v1.1.1 above).
+ */
+def refreshAllDevices() {
+    log.info "Requesting full refresh of all monitored devices via app.fetchData()"
+    try {
+        if (parent && parent.metaClass?.respondsTo(parent, 'fetchData')) {
+            parent.fetchData()
+        } else {
+            log.warn "Parent app.fetchData() not available; cannot perform full refresh."
+        }
+    } catch (e) {
+        log.error "Error while requesting full refresh of all devices: ${e}"
+    }
+}
 
 def fetchDeviceData() {
     if (!parent) {
@@ -120,7 +149,7 @@ def fetchDeviceData() {
 
     def deviceGid = device.deviceNetworkId.replace("EmporiaVue", "")
     if (logEnable) log.debug "Requesting data fetch for device GID: ${deviceGid}"
-    parent.fetchData(deviceGid) // Trigger the app's fetchData method
+    parent.fetchData(deviceGid)
 }
 
 def fetchLocationData() {
@@ -141,9 +170,7 @@ def fetchLocationData() {
 
     def params = [
         uri: "${host}${command}",
-        headers: [
-            'authtoken': token
-        ]
+        headers: ['authtoken': token]
     ]
 
     try {
@@ -194,22 +221,10 @@ def setEnergyUnit(String unit) {
     state.energyUnit = unit
     sendEvent(name: "energyUnit", value: unit)
 
-    //def powerUnit = (unit == "KilowattHours") ? "Watt" : "Dollars"
-    //sendEvent(name: "powerUnit", value: powerUnit)
-
-    if (logEnable) log.info "Energy unit set to ${unit} for ${device.name}" //and power unit set to ${powerUnit} for ${device.name}"
+    if (logEnable) log.info "Energy unit set to ${unit} for ${device.name}"
 }
 
-def getAppSettings() {
-    def app = parent
-    if (!app) {
-        log.error "Unable to fetch settings: Parent app is missing."
-        return [:]
-    }
 
-    return [
-        retrievalFrequency: app.state.retrievalFrequency,
-        energyUnit: app.state.energyUnit,
-        dateFormat: app.state.dateFormat
-    ]
-}
+
+
+
