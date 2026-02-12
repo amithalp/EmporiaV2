@@ -1,0 +1,804 @@
+/*****************************************************************************************************************
+ *  Todo list
+ *  * FUTURE ENHANCEMENT – NOTIFICATIONS
+ *
+ *  When authentication or data retrieval fails (e.g. repeated HTTP 401 responses
+ *  or manualAuthRequired == true), the app currently relies on logs and UI status.
+ *
+ *  Optional future improvements:
+ *  1) Send push / notification directly from the app when:
+ *     - manualAuthRequired becomes true
+ *     - data fetch has not succeeded for a configurable time window
+ *  2) Expose an app-level status attribute (via a virtual or parent device)
+ *     to allow Rule Machine or Notification app triggers.
+ *
+ *  Notifications are intentionally not implemented yet to keep the core
+ *  integration minimal and avoid alert fatigue.
+ *
+ *****************************************************************************************************************
+ *  Raw Source: https://github.com/amithalp/EmporiaV2
+ *  License:
+ *   Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *   in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *   for the specific language governing permissions and limitations under the License.
+ *
+ *   Modifcation History
+ *   Date           Name            Change
+ *   2025-01-13     amithalp        version 1.0.0 - Initial public release
+ *   2025-01-14     amithalp        version 1.0.1 - Fix re-sechduling upon update
+ *   2025-02-06     amithalp        version 1.0.2 - Add functionality to update and delete devices in Hubitat based on changes in the Emporia side (circuit name, merging and unmerging circuits).
+ *                                       This will be done only when the user click the Create/Update/Delete Hubitat Devices button
+ *   2025-02-15     amithalp        version 1.0.3 - Minor layout improvements
+ *   2025-03-16     amithalp        version 1.0.4 - Add support for multiple and nested devices. Device labeling to support multiple Emporia devices
+ *   2025-03-25     amithalp        version 1.0.5 - Add rescheuling for refreshToken method if refresh is failed
+ *   2026-01-18     amithalp        version 1.1.0 - Add automatic token refresh on 401, network-aware retry/backoff, fetch retry throttling, updated authenticate to reset manual auth flags, and schedule fix.
+ *   2026-01-19     amithalp        version 1.1.1 - Add 15s/30s test intervals (runIn loop), initialize fixes, numeric GID list for fetch-all, safer runIn callbacks.
+ *   2026-02-12     amithalp        version 1.1.2 - Add 15 and 30 seconds data Retrieval Frequency options - NOT RECOMMENDED
+ *****************************************************************************************************************/
+/**
+ * EmporiaVueIntegration
+ *
+ * Hubitat app for integrating Emporia Vue devices.
+ * Handles token authentication and refresh, device discovery, device creation, device updating and device deletion.
+ */
+
+import groovy.json.*
+
+static String version() { return '1.1.2' }
+
+definition(
+    name: "EmporiaVueIntegration",
+    namespace: "amithalp",
+    author: "Amit Halperin",
+    description: "Integrates Emporia Vue devices into Hubitat with token management and device creation.",
+    category: "Utility",
+    iconUrl: "",
+    iconX2Url: ""
+)
+
+preferences {
+    page(name: "mainPage")
+    page(name: "discoverDevicesPage")
+}
+
+//------------------------------- App pages --------------------------------------------------------------------------------------------------------------
+def mainPage() {
+    dynamicPage(name: "mainPage", title: "<h2>EmporiaVue Integration</h2><p style='font-size:small'>v${version()}</p>", install: true, uninstall: true) {
+        section("<b>Emporia Account Settings</b><br><span style='font-weight:normal;'>Enter the same email and password as in the Emporia phone app. Then click <b>Update</b>.</span>") {
+            input "email", "text", title: "Emporia Email", required: true, width: 6
+            input "password", "password", title: "Emporia Password", required: true, width: 6
+            input name: "updateCredentialsButton", type: "button", title: "Update"
+        }
+        section("<b>Authentication</b><br><span style='font-weight:normal;'>Click the <b>Authenticate</b> button to start authentication.</span>") {
+            input name: "authenticateButton", type: "button", title: "Authenticate"
+            paragraph "<b>Auth status: </b>" + (state.authStatus ?: "<span style='color:gray;'>No authentication attempt has been made yet.</span>")
+        }
+        section("<b>Device Management</b>") {
+            href(name: "discoverDevices", title: "Discover Devices", required: false, page: "discoverDevicesPage")
+        }
+        section("<b>Data Retrieval Settings</b>") {
+            // Added 15SEC / 30SEC as test options
+            input name: "retrievalFrequency", type: "enum", title: "Retrieval Frequency",
+                options: ["15SEC", "30SEC", "1MIN", "15MIN", "1H", "1D", "1W"], submitOnChange: true, width: 4
+            input name: "energyUnit", type: "enum", title: "Energy Unit", options: ["KilowattHours", "Dollars"], submitOnChange: true, width: 4
+            input name: "dateFormat", type: "enum", title: "Date Format", options: ["yyyy-MM-dd HH:mm:ss", "dd-MM-yyyy HH:mm:ss"], submitOnChange: true, width: 4
+            paragraph "Click <b>Save Changes</b> to apply the data retrieval settings."
+            input name: "applySettingsButton", type: "button", title: "Save Changes"
+        }
+        section("<b>Debug Settings</b>") {
+            input name: "debugLog", type: "bool", title: "Enable Debug Logging", defaultValue: true, required: false
+        }
+        section("<span style='color:red; font-weight:bold;'>Important</span>") {
+            paragraph "Click <b>Done</b> to save the app after completing setup. The app will not be saved otherwise."
+            paragraph "If you click <b>Remove</b> the app will be deleted along with all devices created by the app."
+        }
+    }
+}
+
+def discoverDevicesPage() {
+    dynamicPage(name: "discoverDevicesPage") {
+        section("<b>Discover Emporia Devices</b>") {
+            paragraph "Click <b>Find Devices</b> to discover available devices."
+            input name: "findDevicesButton", type: "button", title: "Find Devices"
+            if (state.discoveredDevices?.isEmpty()) {
+                paragraph "No devices found. Click <b>Find Devices</b> to start discovery."
+            } else {
+                state.discoveredDevices.each { device ->
+                    input name: "selectedDevice_${device.deviceGid}", type: "bool", title: "${device.deviceGid} - ${device.manufacturerDeviceId}", required: false
+                }
+                input name: "updateSelectionButton", type: "button", title: "Update Selection"
+                input name: "createDevicesButton", type: "button", title: "Create/Update/Delete Hubitat Devices"
+                paragraph "Clicking the <b>Create/Update/Delete Hubitat Devices</b> button will compare your current Hubitat devices with the EmporiaVue circuits and either create, update, or delete Hubitat devices accordingly."
+            }
+        }
+    }
+}
+
+//------------------------------- Basic app functions ----------------------------------------------------------------------------------------------------
+def installed() {
+    log.info "EmporiaVueIntegration app installed"
+    initialize()
+}
+
+def updated() {
+    log.info "EmporiaVueIntegration app updated"
+    unschedule(fetchData)            // cancel any cron-based fetch job
+    unschedule(fetchDataLoop)        // cancel high-frequency loop if running
+    initialize()
+}
+
+def initialize() {
+    state.pendingRetry = (state.pendingRetry != null) ? state.pendingRetry : false
+    state.pendingFetchDeviceGid = (state.pendingFetchDeviceGid != null) ? state.pendingFetchDeviceGid : null
+
+    state.debugLog = (settings.debugLog != null) ? settings.debugLog : true
+    if (state.debugLog) log.debug "Debug logging is ${state.debugLog ? 'enabled' : 'disabled'}."
+
+    log.info "Initializing EmporiaVueIntegration app"
+    state.authStatus = state.authStatus ?: "Waiting for user to authenticate..."
+    state.discoveredDevices = state.discoveredDevices ?: []
+
+    state.emporiaDeviceGids = state.emporiaDeviceGids ?: []
+    state.fastLoopEnabled = state.fastLoopEnabled ?: false
+
+    if (state.tokenExpiry) {
+        if (state.debugLog) log.debug "Token expiry detected. Scheduling token refresh."
+        scheduleTokenRefresh()
+    } else {
+        if (state.debugLog) log.debug "No token expiry found. Skipping token refresh scheduling."
+    }
+
+    if (settings.retrievalFrequency) {
+        if (state.debugLog) log.debug "Scheduling data retrieval with frequency: ${settings.retrievalFrequency}."
+        scheduleDataRetrieval()
+    } else {
+        log.warn "Retrieval frequency not set. Skipping data retrieval scheduling."
+    }
+
+    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
+    state.refreshFailureCount = state.refreshFailureCount ?: 0
+    state.authFailureCount = state.authFailureCount ?: 0
+    state.manualAuthRequired = state.manualAuthRequired ?: false
+}
+
+def uninstalled() {
+    getChildDevices().each { device ->
+        deleteChildDevice(device.deviceNetworkId)
+    }
+    state.parentDevices = []
+    state.emporiaDeviceGids = []
+    log.info "All child devices deleted."
+}
+
+def truncateToTwoDecimals(value) {
+    return Math.floor(value * 100) / 100
+}
+
+def getFormattedDate() {
+    def format = settings.dateFormat ?: "yyyy-MM-dd HH:mm:ss"
+    return new Date().format(format, location.timeZone)
+}
+
+// Handle button clicks
+def appButtonHandler(buttonName) {
+    state.updatedSettings = [
+        retrievalFrequency: settings.retrievalFrequency,
+        energyUnit: settings.energyUnit
+    ]
+
+    switch (buttonName) {
+        case "updateCredentialsButton":
+            updateCredentials()
+            break
+        case "authenticateButton":
+            authenticate()
+            break
+        case "findDevicesButton":
+            discoverDevices()
+            break
+        case "updateSelectionButton":
+            updateSelectedDevices()
+            break
+        case "applySettingsButton":
+            applySettings()
+            break
+        case "createDevicesButton":
+            createSelectedDevices()
+            break
+        default:
+            log.warn "Unhandled button click: $buttonName"
+    }
+}
+
+//------------------------------- Authentication process -------------------------------------------------------------------------------------------------
+def updateCredentials() {
+    if (!settings.email || !settings.password) {
+        log.warn "Email and password must be provided to update credentials."
+    } else {
+        state.authStatus = "Credentials updated. You may now authenticate."
+        log.info state.authStatus
+    }
+}
+
+def authenticate() {
+    if (!settings.email || !settings.password) {
+        state.authStatus = "<span style='color:red;'>Error: Email and password must be provided for authentication.</span>"
+        log.error "Authentication failed: Email and password are required."
+        return
+    }
+
+    def authEndpoint = "https://cognito-idp.us-east-2.amazonaws.com/"
+    def headers = [
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+    ]
+    def body = JsonOutput.toJson([
+        AuthFlow: "USER_PASSWORD_AUTH",
+        ClientId: "4qte47jbstod8apnfic0bunmrq",
+        AuthParameters: [
+            USERNAME: settings.email,
+            PASSWORD: settings.password
+        ]
+    ])
+    def params = [uri: authEndpoint, headers: headers, body: body]
+
+    try {
+        httpPost(params) { resp ->
+            if (resp.status == 200) {
+                def responseData = new JsonSlurper().parseText(resp.getData().getText('UTF-8'))
+                if (responseData.AuthenticationResult) {
+                    state.idToken = responseData.AuthenticationResult.IdToken
+                    state.accessToken = responseData.AuthenticationResult.AccessToken
+                    state.refreshToken = responseData.AuthenticationResult.RefreshToken
+                    state.tokenExpiry = now() + (responseData.AuthenticationResult.ExpiresIn * 1000)
+
+                    state.manualAuthRequired = false
+                    state.authFailureCount = 0
+                    state.refreshFailureCount = 0
+                    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
+                    state.pendingFetchDeviceGid = null
+                    state.pendingRetry = false
+
+                    state.authStatus = "<span style='color:green;'>Authentication successful. Token expires at ${new Date(state.tokenExpiry)}.</span>"
+                    log.info "Authentication successful for user: ${settings.email}"
+
+                    scheduleTokenRefresh()
+                } else {
+                    state.authStatus = "<span style='color:red;'>Error: AuthenticationResult missing in response.</span>"
+                    log.error "Authentication failed: Missing AuthenticationResult in response."
+                }
+            } else {
+                state.authStatus = "<span style='color:red;'>Error: Authentication failed. HTTP status: ${resp.status}.</span>"
+                log.error "Authentication failed. HTTP Status: ${resp.status}"
+            }
+        }
+    } catch (e) {
+        state.authStatus = "<span style='color:red;'>Error during authentication: ${e.message}</span>"
+        log.error "Authentication error: ${e.message}"
+    }
+}
+
+def scheduleTokenRefresh() {
+    if (state.tokenExpiry) {
+        def refreshTime = (state.tokenExpiry - now() - 300000) / 1000
+        if (refreshTime > 0) {
+            runIn(refreshTime.toInteger(), refreshToken)
+            log.info "Token refresh scheduled in ${refreshTime.toInteger()} seconds."
+            state.authStatus = "<span style='color:green;'>Token refresh scheduled. Expires at ${new Date(state.tokenExpiry)}.</span>"
+        } else {
+            log.warn "Token already expired or too close to expiry. Immediate refresh required."
+            refreshToken()
+        }
+    } else {
+        log.warn "Token expiry time not available. Cannot schedule refresh."
+        state.authStatus = "<span style='color:red;'>Unable to schedule token refresh: Token expiry unavailable.</span>"
+    }
+}
+
+def refreshToken(forceRetry = false) {
+    if (state.manualAuthRequired) {
+        log.warn "Manual authenticate required - skipping refreshToken."
+        return
+    }
+
+    def authEndpoint = "https://cognito-idp.us-east-2.amazonaws.com/"
+    def headers = [
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth"
+    ]
+    def body = JsonOutput.toJson([
+        AuthFlow: "REFRESH_TOKEN_AUTH",
+        ClientId: "4qte47jbstod8apnfic0bunmrq",
+        AuthParameters: [
+            REFRESH_TOKEN: state.refreshToken
+        ]
+    ])
+    def params = [uri: authEndpoint, headers: headers, body: body]
+
+    try {
+        httpPost(params) { resp ->
+            if (resp.status == 200) {
+                def responseData = new JsonSlurper().parseText(resp.getData().getText('UTF-8'))
+                if (responseData.AuthenticationResult) {
+                    state.idToken = responseData.AuthenticationResult.IdToken
+                    state.tokenExpiry = now() + (responseData.AuthenticationResult.ExpiresIn * 1000)
+                    state.authStatus = "<span style='color:green;'>Token refreshed successfully. Expires at ${new Date(state.tokenExpiry)}.</span>"
+                    log.info "Token refreshed successfully. New expiry: ${new Date(state.tokenExpiry)}."
+                    state.refreshFailureCount = 0
+                    state.authFailureCount = 0
+                    scheduleTokenRefresh()
+
+                    if (forceRetry || state.pendingRetry) {
+                        runIn(2, performPendingFetch)
+                    }
+                } else {
+                    log.error "Token refresh response missing AuthenticationResult."
+                    handleRefreshFailure('auth')
+                }
+            } else {
+                def responseText = resp.getData()?.getText('UTF-8') ?: ""
+                def lower = responseText.toLowerCase()
+                if (lower.contains('notauthorized') || lower.contains('not authorized') || lower.contains('not_authorized')) {
+                    log.error "Token refresh failed: Cognito NotAuthorizedException or invalid refresh token."
+                    handleRefreshFailure('auth')
+                } else {
+                    log.warn "Token refresh failed with HTTP status ${resp.status}. Will treat as network/server error and retry with backoff."
+                    handleRefreshFailure('network')
+                }
+            }
+        }
+    } catch (e) {
+        def msg = e?.message?.toString() ?: ""
+        def lower = msg.toLowerCase()
+        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') || lower.contains('timeout') || lower.contains('connection refused')
+        if (isNetworkError) {
+            log.warn "Network error during token refresh: ${msg}. Will back off and retry."
+            handleRefreshFailure('network')
+        } else {
+            log.error "Unexpected error during token refresh: ${msg}."
+            handleRefreshFailure('auth')
+        }
+    }
+}
+
+def handleRefreshFailure(type = 'network') {
+    if (type == 'network') {
+        state.refreshFailureCount = (state.refreshFailureCount ?: 0) + 1
+        def retryDelaySec = 5 * 60
+        log.warn "Scheduling token refresh retry #${state.refreshFailureCount} in ${retryDelaySec} seconds (network/server error)."
+        runIn(retryDelaySec, refreshToken)
+        state.authStatus = "<span style='color:orange;'>Token refresh failed due to network/server error. Will retry in ${retryDelaySec/60} minutes.</span>"
+        return
+    }
+
+    state.authFailureCount = (state.authFailureCount ?: 0) + 1
+    def maxAuthAttempts = 5
+    if (state.authFailureCount >= maxAuthAttempts) {
+        state.manualAuthRequired = true
+        state.authStatus = "<span style='color:red;'>Token refresh failed: refresh token invalid or revoked. Manual Authenticate required.</span>"
+        log.error "Token refresh auth failures reached ${state.authFailureCount}. Manual Authenticate is now required."
+        return
+    } else {
+        def retryDelaySec = 60
+        log.warn "Token refresh auth failure #${state.authFailureCount}. Will retry in ${retryDelaySec} seconds (up to ${maxAuthAttempts} attempts)."
+        runIn(retryDelaySec, refreshToken)
+        state.authStatus = "<span style='color:orange;'>Token refresh authorization failed (attempt ${state.authFailureCount}/${maxAuthAttempts}). Will retry in ${retryDelaySec} seconds.</span>"
+        return
+    }
+}
+
+//------------------------------- Device discovery and creation ---------------------------------------------------------------------------------------
+def discoverDevices() {
+    def host = "https://api.emporiaenergy.com/"
+    def command = "customers/devices"
+    try {
+        httpGet([uri: "${host}${command}", headers: ['authtoken': state.idToken]]) { resp ->
+            if (resp.status == 200) {
+                state.discoveredDevices = resp.data.devices
+                log.info "Discovered devices: ${state.discoveredDevices.size()}"
+            } else {
+                log.error "Failed to discover devices. HTTP status: ${resp.status}"
+            }
+        }
+    } catch (e) {
+        log.error "Error during device discovery: ${e.message}"
+    }
+}
+
+def updateSelectedDevices() {
+    log.info "Selected devices updated."
+}
+
+def createSelectedDevices() {
+    state.validChildDeviceIds = []
+    def selectedDevices = state.discoveredDevices.findAll { settings["selectedDevice_${it.deviceGid}"] == true }
+
+    if (!selectedDevices) {
+        log.warn "No devices selected for creation."
+        return
+    }
+
+    state.emporiaDeviceGids = selectedDevices.collect { it.deviceGid.toString() }
+
+    state.parentDevices = selectedDevices.collect { device ->
+        def deviceId = "EmporiaVue${device.deviceGid}"
+        def parentDevice = getChildDevice(deviceId) ?: addChildDevice(
+            "amithalp",
+            "EmporiaVueParentDriver",
+            deviceId,
+            [name: deviceId, isComponent: false]
+        )
+
+        if (parentDevice) {
+            log.info "Ensured parent device: ${deviceId}"
+            def usageData = fetchInitialDeviceData(device.deviceGid)
+            def validChildDeviceIds = []
+
+            usageData?.each { channel ->
+                def allChannels = [channel] + (channel.nestedDevices ?: [])
+                allChannels.each { nestedChannel ->
+                    if (nestedChannel.usage != null && nestedChannel.name) {
+                        def childDeviceId = "${deviceId}-${nestedChannel.channelNum ?: nestedChannel.name.hashCode()}"
+                        validChildDeviceIds << childDeviceId
+
+                        def childName = nestedChannel.name
+                        def formattedLabel = "Emp-${device.deviceGid}-${childName} (${nestedChannel.channelNum ?: 'N/A'})"
+
+                        def existingChildDevice = parentDevice.getChildDevice(childDeviceId)
+                        if (!existingChildDevice) {
+                            parentDevice.addChildDevice(
+                                "amithalp",
+                                "Emporia Circuit Driver",
+                                childDeviceId,
+                                [name: childName, label: formattedLabel, isComponent: true]
+                            )
+                            log.info "Created child device: ${childDeviceId} with label: ${formattedLabel}"
+                        } else {
+                            if (existingChildDevice.getLabel() != formattedLabel) {
+                                existingChildDevice.setLabel(formattedLabel)
+                                log.info "Updated child device label: ${childDeviceId} -> ${formattedLabel}"
+                            } else {
+                                log.info "Child device label is already correct: ${childDeviceId}"
+                            }
+                        }
+                    }
+                }
+            }
+
+            state.validChildDeviceIds = (state.validChildDeviceIds ?: []) + validChildDeviceIds
+        }
+
+        deviceId
+    }
+
+    runIn(20, deleteOrphanedDevices)
+
+    if (settings.retrievalFrequency) scheduleDataRetrieval()
+}
+
+def deleteOrphanedDevices() {
+    if (!state.validChildDeviceIds || state.validChildDeviceIds.isEmpty()) {
+        log.warn "No valid child device IDs recorded. Skipping orphan deletion."
+        return
+    }
+    (state.parentDevices ?: []).each { parentId ->
+        def parentDevice = getChildDevice(parentId)
+        if (parentDevice) {
+            def existingChildIds = parentDevice.getChildDevices().collect { it.deviceNetworkId }
+            def orphanIds = existingChildIds - state.validChildDeviceIds
+
+            orphanIds.each { orphanId ->
+                parentDevice.deleteChildDevice(orphanId)
+                log.info "Deleted orphaned child device: ${orphanId}"
+            }
+        }
+    }
+}
+
+def fetchInitialDeviceData(deviceGid) {
+    def host = "https://api.emporiaenergy.com/"
+    def instant = new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
+    def command = "AppAPI?apiMethod=getDeviceListUsages&deviceGids=${deviceGid}&instant=${instant}&scale=1H&energyUnit=KilowattHours"
+
+    try {
+        def response = httpGet([uri: "${host}${command}", headers: ['authtoken': state.idToken]]) { resp -> resp.data }
+        if (response?.deviceListUsages?.devices?.size() > 0) {
+            def devices = response.deviceListUsages.devices
+            if (state.debugLog) log.debug "Fetched usage data for device ${deviceGid}: ${devices}"
+            return devices[0].channelUsages
+        } else {
+            log.warn "No usage data returned for device ${deviceGid}."
+            return null
+        }
+    } catch (e) {
+        log.error "Error fetching usage data for device ${deviceGid}: ${e.message}"
+        return null
+    }
+}
+
+//------------------------------- Data retrival handling -------------------------------------------------------------------------------------------------
+def applySettings() {
+    log.info "Applying settings... Current: Frequency=${state.retrievalFrequency}, Unit=${state.energyUnit}, DateFormat=${state.dateFormat}"
+
+    def frequencyChanged = settings.retrievalFrequency != state.retrievalFrequency
+    def unitChanged = settings.energyUnit != state.energyUnit
+    def dateFormatChanged = settings.dateFormat != state.dateFormat
+
+    state.retrievalFrequency = settings.retrievalFrequency
+    state.energyUnit = settings.energyUnit
+    state.dateFormat = settings.dateFormat
+
+    log.info "Updated settings: Frequency=${state.retrievalFrequency}, Unit=${state.energyUnit}, DateFormat=${state.dateFormat}"
+
+    if (frequencyChanged) {
+        log.info "Retrieval frequency changed. Initiating reschedule..."
+        scheduleDataRetrieval()
+    }
+    if (unitChanged || dateFormatChanged) {
+        log.info "Settings updated successfully. Non-frequency changes applied: Energy Unit and/or Date Format."
+    }
+}
+
+def scheduleDataRetrieval() {
+    if (!state.emporiaDeviceGids || state.emporiaDeviceGids.isEmpty()) {
+        log.warn "No Emporia deviceGids found. Skipping data retrieval scheduling."
+        return
+    }
+
+    try {
+        unschedule(fetchData)
+        unschedule(fetchDataLoop)
+        state.fastLoopEnabled = false
+
+        switch (settings.retrievalFrequency) {
+            case "15SEC":
+                // Hubitat schedule() can't reliably do sub-minute; use runIn loop
+                state.fastLoopEnabled = true
+                runIn(1, fetchDataLoop)
+                log.warn "15SEC is a TEST mode. Uses runIn loop and may stress the Emporia API."
+                break
+            case "30SEC":
+                state.fastLoopEnabled = true
+                runIn(1, fetchDataLoop)
+                log.warn "30SEC is a TEST mode. Uses runIn loop and may stress the Emporia API."
+                break
+            case "1MIN":
+                schedule("0 * * * * ?", fetchData)
+                break
+            case "15MIN":
+                schedule("0 */15 * * * ?", fetchData)
+                break
+            case "1H":
+                schedule("0 0 * * * ?", fetchData)
+                break
+            case "1D":
+                schedule("0 0 0 * * ?", fetchData)
+                break
+            case "1W":
+                schedule("0 0 0 ? * 1", fetchData)
+                break
+            default:
+                log.error "Unsupported retrieval frequency: ${settings.retrievalFrequency}"
+                return
+        }
+
+        log.info "Data retrieval scheduling applied: ${settings.retrievalFrequency}"
+    } catch (e) {
+        log.error "Failed to schedule data retrieval: ${e.message}"
+    }
+}
+
+/**
+ * High-frequency loop used for 15SEC/30SEC test modes.
+ * Uses a self-rescheduling runIn to avoid cron/minute limitation.
+ */
+def fetchDataLoop() {
+    if (!state.fastLoopEnabled) return
+
+    // do not loop if no devices
+    if (!state.emporiaDeviceGids || state.emporiaDeviceGids.isEmpty()) {
+        log.warn "Fast loop: No monitored devices. Stopping loop."
+        state.fastLoopEnabled = false
+        return
+    }
+
+    // do not hammer if manual auth required
+    if (state.manualAuthRequired) {
+        log.warn "Fast loop: Manual Authenticate required. Stopping loop."
+        state.fastLoopEnabled = false
+        return
+    }
+
+    fetchData()
+
+    def delay = (settings.retrievalFrequency == "15SEC") ? 15 : 30
+    runIn(delay, fetchDataLoop)
+}
+
+def fetchData(deviceGid = null) {
+    log.info deviceGid ? "Fetching data for device GID: ${deviceGid}" : "Fetching data for all monitored devices..."
+
+    def targetGids = deviceGid ? [deviceGid.toString()] : (state.emporiaDeviceGids ?: [])
+    if (!targetGids || targetGids.isEmpty()) {
+        log.warn "No monitored devices found. Skipping data fetch."
+        return
+    }
+
+    def instant = new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone('UTC'))
+    def host = "https://api.emporiaenergy.com/"
+    def deviceGids = targetGids.join("+")
+    def command = "AppAPI?apiMethod=getDeviceListUsages&deviceGids=${deviceGids}&instant=${instant}&scale=${settings.retrievalFrequency}&energyUnit=${settings.energyUnit}"
+
+    // map 15SEC/30SEC to 1MIN for Emporia API scale param (avoid invalid scale)
+    if (settings.retrievalFrequency == "15SEC" || settings.retrievalFrequency == "30SEC") {
+        command = "AppAPI?apiMethod=getDeviceListUsages&deviceGids=${deviceGids}&instant=${instant}&scale=1MIN&energyUnit=${settings.energyUnit}"
+    }
+
+    def params = [
+        uri: "${host}${command}",
+        headers: ['authtoken': state.idToken]
+    ]
+
+    try {
+        httpGet(params) { resp ->
+            if (resp.status == 200) {
+                def data = resp.data?.deviceListUsages?.devices
+                if (!data) {
+                    log.warn "No usage data found in response."
+                    return
+                }
+
+                data.each { device ->
+                    def parentDeviceId = "EmporiaVue${device.deviceGid}"
+                    def parentDevice = getChildDevice(parentDeviceId)
+                    if (!parentDevice) {
+                        log.warn "Parent device ${parentDeviceId} not found. Skipping."
+                        return
+                    }
+                    processChannelUsages(parentDevice, device.channelUsages, parentDeviceId)
+                }
+
+                log.info "Data fetch and update completed successfully."
+            } else if (resp.status == 401) {
+                log.warn "Received HTTP 401 from API. Will attempt token refresh and retry (throttled)."
+                attemptRefreshAndRetry(deviceGid)
+            } else {
+                log.error "Failed to fetch data. HTTP status: ${resp.status}"
+            }
+        }
+    } catch (e) {
+        def msg = e?.message?.toString() ?: ""
+        def lower = msg.toLowerCase()
+        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') ||
+                             lower.contains('timeout') || lower.contains('connection refused')
+        if (isNetworkError) {
+            log.warn "Network error during data fetch (will keep scheduled fetch running): ${msg}"
+            return
+        }
+        log.error "Error during data fetch: ${msg}"
+        return
+    }
+}
+
+// ------------------------ updateChildDeviceAttributes/processChannelUsages/etc.
+// Keep your existing implementations below unchanged (same as your current 1.1.1 code).
+
+def updateChildDeviceAttributes(childDevice, channelData) {
+    def energyUnit = settings.energyUnit ?: "KilowattHours"
+    def usage = channelData.usage ?: 0
+    def percentage = truncateToTwoDecimals(channelData.percentage ?: 0)
+    def currentTimestamp = getFormattedDate()
+
+    childDevice.sendEvent(name: "usage", value: usage)
+    childDevice.sendEvent(name: "usagePercentage", value: percentage)
+    childDevice.sendEvent(name: "energyUnit", value: energyUnit)
+    childDevice.sendEvent(name: "retrievalFrequency", value: settings.retrievalFrequency)
+    childDevice.sendEvent(name: "lastUpdated", value: currentTimestamp)
+
+    def power, energy, powerUnit
+    if (energyUnit == "KilowattHours") {
+        powerUnit = "Watt"
+        switch (settings.retrievalFrequency) {
+            case "15SEC":
+            case "30SEC":
+                // since we call the API as 1MIN in fast mode, compute as 1MIN
+                power = Math.round(usage * 60 * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+            case "1MIN":
+                power = Math.round(usage * 60 * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+            case "15MIN":
+                power = Math.round(usage * 4 * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+            case "1H":
+                power = Math.round(usage * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+            case "1D":
+                power = Math.round((usage / 24) * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+            case "1W":
+                power = Math.round(usage / 24 / 7 * 1000)
+                energy = Math.round(usage * 100) / 100.0
+                break
+        }
+    } else {
+        powerUnit = null
+        power = null
+        energy = usage
+    }
+
+    childDevice.sendEvent(name: "power", value: power)
+    childDevice.sendEvent(name: "energy", value: energy)
+    childDevice.sendEvent(name: "powerUnit", value: powerUnit)
+
+    if (state.debugLog) {
+        log.debug "Updated child device ${childDevice.deviceNetworkId}: usage=${usage}, power=${power}, energy=${energy}, powerUnit=${powerUnit}, lastUpdated=${currentTimestamp}"
+    }
+}
+
+def processChannelUsages(parentDevice, channelUsages, parentDeviceId) {
+    channelUsages.each { channel ->
+        def channelNum = channel.channelNum ?: channel.name.hashCode()
+        def childDeviceId = "${parentDeviceId}-${channelNum}"
+        def childDevice = parentDevice.getChildDevice(childDeviceId)
+
+        if (childDevice) {
+            updateChildDeviceAttributes(childDevice, channel)
+        } else {
+            log.warn "Child device ${childDeviceId} not found under parent ${parentDeviceId}. Skipping update."
+        }
+
+        if (channel.nestedDevices && channel.nestedDevices.size() > 0) {
+            channel.nestedDevices.each { nestedDevice ->
+                def nestedParentDeviceId = "EmporiaVue${nestedDevice.deviceGid}"
+                def nestedParentDevice = getChildDevice(nestedParentDeviceId)
+
+                if (nestedParentDevice) {
+                    processChannelUsages(nestedParentDevice, nestedDevice.channelUsages, nestedParentDeviceId)
+                } else {
+                    log.warn "Nested parent device ${nestedParentDeviceId} not found. Skipping nested updates."
+                }
+            }
+        }
+    }
+}
+
+private void attemptRefreshAndRetry(deviceGid = null) {
+    if (state.manualAuthRequired) {
+        log.warn "Manual Authenticate required - skipping automatic refresh attempts."
+        return
+    }
+
+    def nowTs = now()
+    def lastAttempt = state.lastRefreshAttempt ?: 0
+    def minIntervalMs = 60 * 1000
+
+    if ((nowTs - lastAttempt) < minIntervalMs) {
+        if (state.debugLog) log.debug "Refresh attempt throttled. Last attempt ${(nowTs - lastAttempt)} ms ago."
+        state.pendingFetchDeviceGid = deviceGid
+        runIn(((minIntervalMs - (nowTs - lastAttempt)) / 1000).toInteger() + 5, performPendingFetch)
+        return
+    }
+
+    state.lastRefreshAttempt = nowTs
+    state.pendingFetchDeviceGid = deviceGid
+    state.pendingRetry = true
+    refreshToken(true)
+}
+
+def performPendingFetch() {
+    def gid = state.pendingFetchDeviceGid
+    state.pendingFetchDeviceGid = null
+    state.pendingRetry = false
+    if (gid) fetchData(gid) else fetchData()
+}
