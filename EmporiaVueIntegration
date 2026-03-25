@@ -1,53 +1,90 @@
-/* Todo list
-*  * FUTURE ENHANCEMENT – NOTIFICATIONS
- *
- * When authentication or data retrieval fails (e.g. repeated HTTP 401 responses
- * or manualAuthRequired == true), the app currently relies on logs and UI status.
- *
- * Optional future improvements:
- * 1) Send push / notification directly from the app when:
- *    - manualAuthRequired becomes true
- *    - data fetch has not succeeded for a configurable time window
- * 2) Expose an app-level status attribute (via a virtual or parent device)
- *    to allow Rule Machine or Notification app triggers.
- *
- * Notifications are intentionally not implemented yet to keep the core
- * integration minimal and avoid alert fatigue.
+/* ----------------------------------------------------------------------------------------------------------------
+ * TODO
+ * TBD
+ * ----------------------------------------------------------------------------------------------------------------
+ */
 
 /*****************************************************************************************************************
  *  Raw Source: https://github.com/amithalp/EmporiaV2
- *  License:
- *   Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *   in compliance with the License. You may obtain a copy of the License at:
+ *
+ *  License
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
- *   Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *   on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *   for the specific language governing permissions and limitations under the License.
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is
+ *  distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and limitations under the License.
  *
- *   Modifcation History
- *   Date           Name            Change
- *   2025-01-13     amithalp        version 1.0.0 - Initial public release
- *   2025-01-14     amithalp        version 1.0.1 - Fix re-sechduling upon update
- *   2025-02-06     amithalp        version 1.0.2 - Add functionality to update and delete devices in Hubitat based on changes in the Emporia side (circuit name, merging and unmerging circuits).
- *                                       This will be done only when the user click the Create/Update/Delete Hubitat Devices button
- *   2025-02-15     amithalp        version 1.0.3 - Minor layout improvements
- *   2025-03-16     amithalp        version 1.0.4 - Add support for multiple and nested devices. Device labeling to support multiple Emporia devices
- *   2025-03-25     amithalp        version 1.0.5 - Add rescheuling for refreshToken method if refresh is failed
- *   2026-01-18     amithalp        version 1.1.0 - Add automatic token refresh on 401, network-aware retry/backoff, fetch retry throttling, updated authenticate to reset manual auth flags, and schedule fix.
- *   2026-01-19     amithalp        version 1.1.1 - Fix initialize() syntax error, ensure pending flags are initialized, use numeric GID list for fetch-all, do not unschedule all jobs, safer runIn callbacks.
+ *  Development Notes
+ *  This application was developed with the assistance of ChatGPT during iterative design, debugging,
+ *  and feature development.
+ *
+ *  AI Assistant Version
+ *  ChatGPT GPT-5.3 (OpenAI)
+ *
+ *  Modification History
+ *  Date           Author          Change
+ *  ---------------------------------------------------------------------------------------------------------------
+ *  2025-01-13     amithalp        v1.0.0  Initial public release
+ *
+ *  2025-01-14     amithalp        v1.0.1  Fix rescheduling upon update
+ *
+ *  2025-02-06     amithalp        v1.0.2  Add functionality to update and delete devices in Hubitat based on
+ *                                        changes on the Emporia side (circuit name, merging and unmerging circuits).
+ *                                        This occurs only when the user clicks the
+ *                                        "Create / Update / Delete Hubitat Devices" button.
+ *
+ *  2025-02-15     amithalp        v1.0.3  Minor layout improvements
+ *
+ *  2025-03-16     amithalp        v1.0.4  Add support for multiple and nested devices.
+ *                                        Improved device labeling to support multiple Emporia units.
+ *
+ *  2025-03-25     amithalp        v1.0.5  Add rescheduling for refreshToken() if token refresh fails.
+ *
+ *  2026-01-18     amithalp        v1.1.0  Add automatic token refresh on HTTP 401 responses.
+ *                                        Implement network-aware retry/backoff.
+ *                                        Add fetch retry throttling.
+ *                                        Update authenticate() to reset manual authentication flags.
+ *                                        Fix scheduling behavior.
+ *
+ *  2026-01-19     amithalp        v1.1.1  Fix initialize() syntax issue.
+ *                                        Ensure pending flags are initialized.
+ *                                        Use numeric GID list for fetch-all operations.
+ *                                        Prevent unscheduling unrelated jobs.
+ *                                        Safer runIn() callbacks.
+ *
+ *  2026-03-24     amithalp        v1.1.2  Fix HTTP 401 handling when returned via exception path during data fetch.
+ *                                        Add fetch health monitoring (success / failure tracking).
+ *                                        Add configurable health notifications:
+ *                                          • user-selectable notification devices
+ *                                          • customizable failure and recovery messages
+ *                                          • configurable thresholds (failed attempts and/or failure duration)
+ *                                        Implement single alert per outage with optional recovery alert.
+ *                                        Add immediate notification when manual authentication is required.
+ *                                        Reset health tracking after successful authentication or token refresh.
+ *                                        General code cleanup and helper method consolidation.
+ *
  *****************************************************************************************************************/
+
 /**
  * EmporiaVueIntegration
  *
- * Hubitat app for integrating Emporia Vue devices.
- * Handles token authentication and refresh, device discovery, device creation, device updating and device deletion.
+ * Hubitat application for integrating Emporia Vue energy monitoring devices.
+ *
+ * Core responsibilities:
+ *  • Authentication and token lifecycle management
+ *  • Automatic token refresh
+ *  • Device discovery
+ *  • Hubitat device creation, update, and removal
+ *  • Periodic data retrieval from the Emporia cloud API
+ *  • Integration health monitoring and notification
  */
 
 import groovy.json.*
 
-static String version() { return '1.1.1' }
+static String version() { return '1.1.2' }
 
 definition(
     name: "EmporiaVueIntegration",
@@ -86,6 +123,70 @@ def mainPage() {
             paragraph "Click <b>Save Changes</b> to apply the data retrieval settings."
             input name: "applySettingsButton", type: "button", title: "Save Changes"
         }
+                section("<b>Health Monitoring Notifications (Optional)</b>") {
+            input name: "enableHealthNotifications",
+                  type: "bool",
+                  title: "Enable health notifications",
+                  defaultValue: false,
+                  submitOnChange: true
+
+            if (enableHealthNotifications) {
+
+                input name: "notificationDevices",
+                      type: "capability.notification",
+                      title: "Notification device(s)",
+                      multiple: true,
+                      required: false
+
+                input name: "notificationMessageFailure",
+                      type: "text",
+                      title: "Failure notification text",
+                      defaultValue: "Emporia app alert: data fetch is failing.",
+                      required: false
+
+                input name: "notificationMessageRecovery",
+                      type: "text",
+                      title: "Recovery notification text",
+                      defaultValue: "Emporia app recovery: data fetch is working again.",
+                      required: false
+
+                input name: "notifyAfterMode",
+                      type: "enum",
+                      title: "Send failure notification after",
+                      options: [
+                          "tries"           : "X failed fetch tries",
+                          "minutes"         : "X minutes without success",
+                          "tries_or_minutes": "Either X tries or X minutes"
+                      ],
+                      defaultValue: "tries_or_minutes",
+                      required: true,
+                      submitOnChange: true
+
+                if (notifyAfterMode in ["tries", "tries_or_minutes"]) {
+                    input name: "notifyAfterTries",
+                          type: "number",
+                          title: "Number of failed fetch tries",
+                          defaultValue: 5,
+                          range: "1..1000",
+                          required: true
+                }
+
+                if (notifyAfterMode in ["minutes", "tries_or_minutes"]) {
+                    input name: "notifyAfterMinutes",
+                          type: "number",
+                          title: "Number of minutes without successful fetch",
+                          defaultValue: 10,
+                          range: "1..10080",
+                          required: true
+                }
+
+                input name: "sendRecoveryNotification",
+                      type: "bool",
+                      title: "Send recovery notification when app starts working again",
+                      defaultValue: true,
+                      required: false
+            }
+		}
         section("<b>Debug Settings</b>") {
             input name: "debugLog", type: "bool", title: "Enable Debug Logging", defaultValue: true, required: false
         }
@@ -93,6 +194,7 @@ def mainPage() {
             paragraph "Click <b>Done</b> to save the app after completing setup. The app will not be saved otherwise."
             paragraph "If you click <b>Remove</b> the app will be deleted along with all devices created by the app."
         }
+
     }
 }
 
@@ -128,7 +230,6 @@ def updated() {
 }
 
 def initialize() {
-    // FIX: removed stray '.' and ensure pending flags exist
     state.pendingRetry = (state.pendingRetry != null) ? state.pendingRetry : false
     state.pendingFetchDeviceGid = (state.pendingFetchDeviceGid != null) ? state.pendingFetchDeviceGid : null
 
@@ -138,11 +239,27 @@ def initialize() {
     log.info "Initializing EmporiaVueIntegration app"
     state.authStatus = state.authStatus ?: "Waiting for user to authenticate..."
     state.discoveredDevices = state.discoveredDevices ?: []
-
-    // Numeric Emporia GIDs list (strings)
     state.emporiaDeviceGids = state.emporiaDeviceGids ?: []
 
-    // Token refresh scheduling
+    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
+    state.refreshFailureCount = state.refreshFailureCount ?: 0
+    state.authFailureCount = state.authFailureCount ?: 0
+    state.manualAuthRequired = state.manualAuthRequired ?: false
+
+    // Health / notification tracking
+    state.lastSuccessfulFetch = state.lastSuccessfulFetch ?: null
+    state.firstFailureTime = state.firstFailureTime ?: null
+    state.lastFailureTime = state.lastFailureTime ?: null
+    state.consecutiveFetchFailures = state.consecutiveFetchFailures ?: 0
+    state.lastFetchError = state.lastFetchError ?: null
+    state.lastFetchErrorType = state.lastFetchErrorType ?: null
+    state.failureAlertSent = state.failureAlertSent ?: false
+    state.manualAuthAlertSent = state.manualAuthAlertSent ?: false
+
+    if (settings.enableHealthNotifications && !settings.notificationDevices) {
+        log.warn "Health notifications are enabled but no notification devices are selected."
+    }
+
     if (state.tokenExpiry) {
         if (state.debugLog) log.debug "Token expiry detected. Scheduling token refresh."
         scheduleTokenRefresh()
@@ -150,19 +267,12 @@ def initialize() {
         if (state.debugLog) log.debug "No token expiry found. Skipping token refresh scheduling."
     }
 
-    // Data retrieval scheduling
     if (settings.retrievalFrequency) {
         if (state.debugLog) log.debug "Scheduling data retrieval with frequency: ${settings.retrievalFrequency}."
         scheduleDataRetrieval()
     } else {
         log.warn "Retrieval frequency not set. Skipping data retrieval scheduling."
     }
-
-    // Tracking
-    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
-    state.refreshFailureCount = state.refreshFailureCount ?: 0
-    state.authFailureCount = state.authFailureCount ?: 0
-    state.manualAuthRequired = state.manualAuthRequired ?: false
 }
 
 def uninstalled() {
@@ -260,11 +370,12 @@ def authenticate() {
                     state.manualAuthRequired = false
                     state.authFailureCount = 0
                     state.refreshFailureCount = 0
-                    state.lastRefreshAttempt = state.lastRefreshAttempt ?: 0
+                    state.lastRefreshAttempt = 0
                     state.pendingFetchDeviceGid = null
                     state.pendingRetry = false
 
                     state.authStatus = "<span style='color:green;'>Authentication successful. Token expires at ${new Date(state.tokenExpiry)}.</span>"
+                    resetFetchHealthState()
                     log.info "Authentication successful for user: ${settings.email}"
 
                     scheduleTokenRefresh()
@@ -333,6 +444,7 @@ def refreshToken(forceRetry = false) {
                     state.tokenRefreshRetries = 0
                     state.refreshFailureCount = 0
                     state.authFailureCount = 0
+                    resetFetchHealthState()
                     scheduleTokenRefresh()
 
                     if (forceRetry || state.pendingRetry) {
@@ -373,7 +485,6 @@ def handleRefreshFailure(type = 'network') {
         state.refreshFailureCount = (state.refreshFailureCount ?: 0) + 1
         def retryDelaySec = 5 * 60
         log.warn "Scheduling token refresh retry #${state.refreshFailureCount} in ${retryDelaySec} seconds (network/server error)."
-        // FIX: safer callback (not string)
         runIn(retryDelaySec, refreshToken)
         state.authStatus = "<span style='color:orange;'>Token refresh failed due to network/server error. Will retry in ${retryDelaySec/60} minutes.</span>"
         return
@@ -381,15 +492,18 @@ def handleRefreshFailure(type = 'network') {
 
     state.authFailureCount = (state.authFailureCount ?: 0) + 1
     def maxAuthAttempts = 5
+
     if (state.authFailureCount >= maxAuthAttempts) {
         state.manualAuthRequired = true
         state.authStatus = "<span style='color:red;'>Token refresh failed: refresh token invalid or revoked. Manual Authenticate required.</span>"
+
+        sendManualAuthRequiredNotificationIfNeeded()
+
         log.error "Token refresh auth failures reached ${state.authFailureCount}. Manual Authenticate is now required."
         return
     } else {
         def retryDelaySec = 60
         log.warn "Token refresh auth failure #${state.authFailureCount}. Will retry in ${retryDelaySec} seconds (up to ${maxAuthAttempts} attempts)."
-        // FIX: safer callback (not string)
         runIn(retryDelaySec, refreshToken)
         state.authStatus = "<span style='color:orange;'>Token refresh authorization failed (attempt ${state.authFailureCount}/${maxAuthAttempts}). Will retry in ${retryDelaySec} seconds.</span>"
         return
@@ -629,16 +743,18 @@ def fetchData(deviceGid = null) {
 
     def params = [
         uri: "${host}${command}",
-        headers: ['authtoken': state.idToken]
+        headers: ['authtoken': state.idToken] 
     ]
 
     try {
         httpGet(params) { resp ->
             if (resp.status == 200) {
                 if (state.debugLog) log.debug "Raw API Response: ${resp.data}"
+
                 def data = resp.data?.deviceListUsages?.devices
                 if (!data) {
                     log.warn "No usage data found in response."
+                    recordFetchFailure("empty_response", "No usage data found in response")
                     return
                 }
 
@@ -652,28 +768,55 @@ def fetchData(deviceGid = null) {
                     processChannelUsages(parentDevice, device.channelUsages, parentDeviceId)
                 }
 
+                recordFetchSuccess()
                 log.info "Data fetch and update completed successfully."
             } else if (resp.status == 401) {
-                log.warn "Received HTTP 401 from API. Will attempt token refresh and retry (throttled)."
+                recordFetchFailure("http_401", "HTTP 401 Unauthorized")
+                log.warn "Received HTTP 401 from API response. Will attempt token refresh and retry (throttled)."
                 attemptRefreshAndRetry(deviceGid)
+                return
             } else {
+                recordFetchFailure("http_status", "HTTP status: ${resp.status}")
                 log.error "Failed to fetch data. HTTP status: ${resp.status}"
+                return
             }
         }
     } catch (e) {
         def msg = e?.message?.toString() ?: ""
         def lower = msg.toLowerCase()
-        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') ||
-                             lower.contains('timeout') || lower.contains('connection refused')
+
+        def is401Error =
+            lower.contains("status code: 401") ||
+            lower.contains("status code 401") ||
+            lower.contains("http 401") ||
+            lower.contains("401 unauthorized") ||
+            lower.contains("unauthorized")
+
+        def isNetworkError =
+            lower.contains("unknownhost") ||
+            lower.contains("connect") ||
+            lower.contains("timed out") ||
+            lower.contains("timeout") ||
+            lower.contains("connection refused")
+
+        if (is401Error) {
+            recordFetchFailure("http_401", msg)
+            log.warn "Received HTTP 401 during data fetch exception path. Will attempt token refresh and retry (throttled). Error: ${msg}"
+            attemptRefreshAndRetry(deviceGid)
+            return
+        }
+
         if (isNetworkError) {
+            recordFetchFailure("network", msg)
             log.warn "Network error during data fetch (will keep scheduled fetch running): ${msg}"
             return
         }
+
+        recordFetchFailure("exception", msg)
         log.error "Error during data fetch: ${msg}"
         return
     }
 }
-
 def updateChildDeviceAttributes(childDevice, channelData) {
     def energyUnit = settings.energyUnit ?: "KilowattHours"
     def usage = channelData.usage ?: 0
@@ -797,4 +940,180 @@ def performPendingFetch() {
     } else {
         fetchData()
     }
+}
+
+private void recordFetchSuccess() {
+    def hadFailureAlert = (state.failureAlertSent == true)
+
+    state.lastSuccessfulFetch = now()
+    state.firstFailureTime = null
+    state.lastFailureTime = null
+    state.consecutiveFetchFailures = 0
+    state.lastFetchError = null
+    state.lastFetchErrorType = null
+
+    if (state.debugLog) {
+        log.debug "Fetch health reset after successful data fetch."
+    }
+
+    if (hadFailureAlert) {
+        sendRecoveryNotificationIfNeeded()
+    }
+
+    state.failureAlertSent = false
+    state.manualAuthAlertSent = false
+}
+
+private void recordFetchFailure(String errorType = "unknown", String errorMessage = "") {
+    if (!state.firstFailureTime) {
+        state.firstFailureTime = now()
+    }
+
+    state.lastFailureTime = now()
+    state.consecutiveFetchFailures = (state.consecutiveFetchFailures ?: 0) + 1
+    state.lastFetchErrorType = errorType
+    state.lastFetchError = errorMessage ?: "Unknown fetch error"
+
+    if (state.debugLog) {
+        log.debug "Fetch failure recorded. type=${state.lastFetchErrorType}, count=${state.consecutiveFetchFailures}, message=${state.lastFetchError}"
+    }
+
+    sendFailureNotificationIfNeeded()
+}
+
+private Long getMinutesSinceLastSuccess() {
+    if (!state.lastSuccessfulFetch) return null
+    return ((now() - (state.lastSuccessfulFetch as Long)) / 60000L) as Long
+}
+
+private Long getCurrentFailureDurationMinutes() {
+    if (!state.firstFailureTime) return 0L
+    return ((now() - (state.firstFailureTime as Long)) / 60000L) as Long
+}
+
+private void resetFetchHealthState() {
+    state.firstFailureTime = null
+    state.lastFailureTime = null
+    state.consecutiveFetchFailures = 0
+    state.lastFetchError = null
+    state.lastFetchErrorType = null
+    state.failureAlertSent = false
+    state.manualAuthAlertSent = false
+}
+
+private Boolean notificationsEnabledAndConfigured() {
+    return settings.enableHealthNotifications == true && settings.notificationDevices
+}
+
+private Integer getNotifyAfterTriesThreshold() {
+    return (settings.notifyAfterTries ?: 5) as Integer
+}
+
+private Integer getNotifyAfterMinutesThreshold() {
+    return (settings.notifyAfterMinutes ?: 10) as Integer
+}
+
+private String getFailureNotificationBaseText() {
+    return settings.notificationMessageFailure ?: "Emporia app alert: data fetch is failing."
+}
+
+private String getRecoveryNotificationBaseText() {
+    return settings.notificationMessageRecovery ?: "Emporia app recovery:"
+}
+
+private Boolean shouldSendFailureNotification() {
+    if (!notificationsEnabledAndConfigured()) return false
+    if (state.failureAlertSent == true) return false
+
+    String mode = settings.notifyAfterMode ?: "tries_or_minutes"
+    Integer failedTries = (state.consecutiveFetchFailures ?: 0) as Integer
+    Long failedMinutes = getCurrentFailureDurationMinutes()
+
+    Integer triesThreshold = getNotifyAfterTriesThreshold()
+    Integer minutesThreshold = getNotifyAfterMinutesThreshold()
+
+    switch (mode) {
+        case "tries":
+            return failedTries >= triesThreshold
+        case "minutes":
+            return failedMinutes >= minutesThreshold
+        case "tries_or_minutes":
+            return (failedTries >= triesThreshold) || (failedMinutes >= minutesThreshold)
+        default:
+            return false
+    }
+}
+
+private String buildFailureNotificationMessage() {
+    String baseText = getFailureNotificationBaseText()
+    Integer failedTries = (state.consecutiveFetchFailures ?: 0) as Integer
+    Long failedMinutes = getCurrentFailureDurationMinutes()
+    String errorType = state.lastFetchErrorType ?: "unknown"
+    String errorMsg = state.lastFetchError ?: "Unknown fetch error"
+
+    return "${baseText} Failed tries: ${failedTries}. Failed for: ${failedMinutes} minute(s). Last error type: ${errorType}. Last error: ${errorMsg}"
+}
+
+private String buildRecoveryNotificationMessage() {
+    String baseText = getRecoveryNotificationBaseText()
+    return "${baseText} Data fetching has resumed successfully."
+}
+
+private String buildManualAuthRequiredNotificationMessage() {
+    String baseText = getFailureNotificationBaseText()
+    String errorType = state.lastFetchErrorType ?: "auth"
+    String errorMsg = state.lastFetchError ?: "Manual authentication is required"
+
+    return "${baseText} Manual authentication is required. The app could not recover automatically. Last error type: ${errorType}. Last error: ${errorMsg}"
+}
+
+private void sendHealthNotification(String msg) {
+    if (!notificationsEnabledAndConfigured()) {
+        log.warn "Health notification skipped: notifications not enabled or no devices configured."
+        return
+    }
+
+    log.warn "Sending health notification: ${msg}"
+
+    settings.notificationDevices.each { dev ->
+        try {
+            log.warn "Sending notification to device: ${dev.displayName}"
+            dev.deviceNotification(msg)
+            log.warn "Notification command sent to: ${dev.displayName}"
+        } catch (e) {
+            log.warn "Failed to send notification to ${dev}: ${e?.message}"
+        }
+    }
+}
+
+private void sendFailureNotificationIfNeeded() {
+    if (!shouldSendFailureNotification()) return
+
+    String msg = buildFailureNotificationMessage()
+    sendHealthNotification(msg)
+    state.failureAlertSent = true
+
+    log.warn "Health failure notification sent."
+}
+
+private void sendRecoveryNotificationIfNeeded() {
+    if (!notificationsEnabledAndConfigured()) return
+    if (settings.sendRecoveryNotification != true) return
+    if (state.failureAlertSent != true) return
+
+    String msg = buildRecoveryNotificationMessage()
+    sendHealthNotification(msg)
+
+    log.info "Health recovery notification sent."
+}
+
+private void sendManualAuthRequiredNotificationIfNeeded() {
+    if (!notificationsEnabledAndConfigured()) return
+    if (state.manualAuthAlertSent == true) return
+
+    String msg = buildManualAuthRequiredNotificationMessage()
+    sendHealthNotification(msg)
+    state.manualAuthAlertSent = true
+
+    log.warn "Manual authentication required notification sent."
 }
