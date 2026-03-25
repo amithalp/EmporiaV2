@@ -1,21 +1,24 @@
 # EmporiaVue Integration for Hubitat
 
-This project integrates **Emporia Vue** devices into the **Hubitat** platform, enabling real-time energy monitoring and management. The integration supports **token-based authentication**, **device discovery**, **data retrieval**, and **dynamic updates to child devices**.
+This project integrates **Emporia Vue** devices into the **Hubitat** platform, enabling real-time energy monitoring and management. The integration supports **token-based authentication**, **device discovery**, **scheduled data retrieval**, **dynamic updates to child devices**, and **health monitoring with notifications**.
 
 ## Features
 - **Authentication**: Secure **token-based authentication** with Emporia’s API.
+- **Automatic Token Refresh**: Automatically refreshes tokens before expiry and retries failed fetches after a successful refresh.
 - **Device Discovery**: Automatically **discovers Emporia devices** linked to your account.
 - **Child Device Management**: Creates **Hubitat child devices** for each circuit, ensuring full synchronization.
 - **Data Retrieval**: Supports **scheduled** and **manual** retrieval of energy usage.
+- **Health Monitoring & Notifications**:
+  - Tracks data fetch success and failure
+  - Detects prolonged fetch failures
+  - Supports **configurable notifications**
+  - Sends a **single alert per outage**
+  - Sends a **recovery notification** when normal operation resumes
+  - Sends an **immediate alert** when manual authentication is required
 - **Device Labeling**: Ensures **unique labels** to avoid conflicts in **InfluxDB and Grafana**.
 - **Custom Attributes**: Updates child devices with:
   - `usage`, `usagePercentage`, `power`, `energy`
   - `powerUnit`, `energyUnit`, `retrievalFrequency`, `lastUpdated`
-
-## Architecture Notes
-- The Hubitat App owns authentication, scheduling, and API calls.
-- Parent devices represent Emporia hardware units (deviceGid).
-- Child devices represent individual circuits and never call the API directly.
 
 ## Installation
 
@@ -41,18 +44,26 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
 - Choose **retrieval frequency**, **energy units**, and **date format**.
 - Click **Save Settings**.
 
+### 6. **Optional: Configure Health Notifications**
+- Enable **Health Monitoring Notifications**.
+- Select one or more **notification devices**.
+- Define custom **failure** and **recovery** messages.
+- Configure thresholds for alerts:
+  - after **X failed fetch attempts**
+  - after **X minutes without successful data retrieval**
+  - or **either condition**
+
 ## Usage
 
 ### Authentication
 - **Authenticate**: Login using **Emporia credentials**.
-- **Token Refresh**: Tokens **automatically refresh** 5 minutes before expiration.
-- As of app version 1.0.5, the app will auto reschedule refresh token in case of failure.
-- As of app version 1.1.1, if internet or power is lost for several hours, the app will automatically recover:
-  - Network outages do NOT require re-authentication.
-  - Token refresh is retried with backoff.
-  - Manual Authenticate is required only if the refresh token is revoked or invalid.
+- **Token Refresh**: Tokens **automatically refresh** before expiration.
+- If the API returns **HTTP 401**, the app attempts token refresh automatically and retries the failed fetch.
+- Network/server failures are treated differently from authentication failures:
+  - **Network/server failures** retry automatically with backoff.
+  - **Authentication failures** retry a limited number of times before requiring manual re-authentication.
+- **Manual Authenticate** is required only if the refresh token is invalid or repeated refresh attempts fail.
 
-  
 ### Device Management
 - **Discover Devices**: Lists available **Emporia Vue** devices.
 - **Create/Update/Delete Devices**:
@@ -61,30 +72,45 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
   - **Removes orphaned circuits** that no longer exist.
 
 ### Device Labeling
-- Devices now include **their parent device** in their **label** to prevent **naming conflicts** in **InfluxDB/Grafana**.
-- **Example Naming Updates**:
-  - **Before**: `"Main"`
-  - **After**: `"Emp-406720-Main"` and `"Emp-430515-Main"`  
-- Labels are **automatically updated**.
+- Devices include **their parent device** in their **label** to prevent **naming conflicts** in **InfluxDB/Grafana**.
+
+**Example Naming Updates**:
+- **Before**: `"Main"`
+- **After**: `"Emp-406720-Main"` and `"Emp-430515-Main"`
+
+Labels are **automatically updated**.
 
 ### Data Retrieval
-- **Scheduled Retrieval**: Runs automatically at **configured intervals**.
-- **Manual Retrieval**: Click **"Refresh"** on a **child device** to refresh its parent Emporia device.
+- **Scheduled Retrieval**: Runs automatically at the configured interval.
+- **Manual Retrieval**:
+  - Clicking **"Refresh"** on a **child device** refreshes its **parent Emporia device only**.
+
+### Health Monitoring & Notifications
+The app monitors its operational health and can notify users when issues occur.
+
+Supported behavior:
+- Tracks consecutive data fetch failures
+- Tracks elapsed time since last successful data retrieval
+- Sends a **single notification per outage**
+- Sends an optional **recovery notification** when normal operation resumes
+- Sends an **immediate notification** when `manualAuthRequired` becomes true
+
+This approach helps surface real issues while avoiding unnecessary alert noise.
 
 ## Attributes
 
 Each **child device** updates with the following attributes:
 
-| Attribute           | Description |
-|--------------------|-------------|
-| **usage**          | Energy consumption in the last interval |
+| Attribute | Description |
+|----------|-------------|
+| **usage** | Energy consumption in the last interval |
 | **usagePercentage** | Share of total energy usage |
-| **power**         | Instantaneous power consumption |
-| **energy**        | Accumulated energy consumption |
-| **powerUnit**     | Unit of power (e.g., Watts) |
-| **energyUnit**    | Configurable unit (KilowattHours/Dollars) |
+| **power** | Instantaneous power consumption |
+| **energy** | Accumulated energy consumption |
+| **powerUnit** | Unit of power (e.g., Watts) |
+| **energyUnit** | Configurable unit (`KilowattHours` / `Dollars`) |
 | **retrievalFrequency** | Data retrieval interval |
-| **lastUpdated**   | Timestamp of the last update |
+| **lastUpdated** | Timestamp of the last update |
 
 ## Settings
 
@@ -93,62 +119,96 @@ Each **child device** updates with the following attributes:
 - **Password**: Your Emporia account password.
 
 ### Data Retrieval Settings
-- **Retrieval Frequency**: `1MIN`, `15MIN`, `1H`, `1D`, `1W`.
-- **Energy Unit**: `KilowattHours` or `Dollars`.
-- **Date Format**: `yyyy-MM-dd HH:mm:ss` or `dd-MM-yyyy HH:mm:ss`.
+- **Retrieval Frequency**: `1MIN`, `15MIN`, `1H`, `1D`, `1W`
+- **Energy Unit**: `KilowattHours` or `Dollars`
+- **Date Format**: `yyyy-MM-dd HH:mm:ss` or `dd-MM-yyyy HH:mm:ss`
+
+### Health Notification Settings
+- Enable **Health Notifications**
+- Select **Notification Device(s)**
+- Configure **Failure Notification Message**
+- Configure **Recovery Notification Message**
+- Configure **Failure Thresholds**
+  - number of failed fetch attempts
+  - elapsed minutes since last success
+- Enable optional **Recovery Notification**
 
 ### Debug Logging
 - **Enable Debug Logging**: Toggle logs **on/off**.
 
 ## Debugging and Logs
 
-Logs provide insights into **authentication**, **device creation**, **data retrieval**, and **attribute updates**. 
+Logs provide insight into **authentication**, **token refresh**, **device creation**, **data retrieval**, **health monitoring**, and **attribute updates**.
 
 ### Example Logs
-#### Successful Authentication
+
+**Successful Authentication**
+
 app:2242025-03-15 10:10:10.123info Authentication successful. Token expires at 2025-03-15T15:10:10Z.
 
-#### Data Fetch
-app:2242025-03-15 11:11:11.123info Fetching data for all monitored devices... app:2242025-03-15 11:11:11.456debug Updated child device EmporiaVue406720-2: usage=0.0153, power=921, energy=0.02, powerUnit=Watt.
 
-#### Device Discovery
-app:2242025-03-15 12:12:12.123info Discovered 4 Emporia devices.
+**Successful Data Fetch**
+
+app:2242025-03-15 11:11:11.123info Fetching data for all monitored devices...
+app:2242025-03-15 11:11:11.456debug Updated child device EmporiaVue406720-2: usage=0.0153, power=921, energy=0.02, powerUnit=Watt.
+app:2242025-03-15 11:11:11.976info Data fetch and update completed successfully.
+
+
+**Failure Notification**
+
+app:632026-03-25 19:21:23.243warn Sending health notification: Emporia app alert: data fetch is failing.
+app:632026-03-25 19:21:23.267warn Notification command sent to: iPhone Amit
+app:632026-03-25 19:21:23.270warn Health failure notification sent.
+
+
+**Recovery Notification**
+
+app:632026-03-25 19:25:01.912warn Sending health notification: Emporia app recovery: data fetch is working again.
+app:632026-03-25 19:25:01.959warn Notification command sent to: iPhone Amit
+app:632026-03-25 19:25:01.966info Health recovery notification sent.
+
 
 ## Known Limitations
-- **Refreshing a child device** triggers data retrieval for its parent Emporia device only (not all devices).
-- **InfluxDB** exports **device labels**, which is now addressed by **renaming** devices during creation.
+
+- Refreshing a **child device** triggers a data retrieval for its **parent device only**, not for all devices.
+- The integration depends on Emporia cloud API behavior and token lifecycle behavior, which may change over time.
+- Notification delivery depends on the selected Hubitat notification device configuration.
 
 ## Future Enhancements
-- **Support for additional energy units** beyond KilowattHours/Dollars.
-- **Optimize logging verbosity** for a better experience.
-
-## Support
-For **questions or issues**, submit an **issue** on GitHub.
+- Expose integration health status via a **virtual device attribute** for Rule Machine or automation triggers.
+- Support additional **energy unit conversions**.
+- Continue improving **log clarity and diagnostics**.
 
 ## Author
-**Amit Halperin**
+Amit Halperin
 
-## What’s New?
-✅ **Support for multiple (even nested) EmporiaVue devices**
-✅ **Automatic Device Labeling**  
-✅ **Ensures Unique Names in InfluxDB/Grafana**  
-✅ **Improved Debug Logging & Device Updates**  
-✅ **Rescheduling token refresh in case of failure**
+## Development Notes
+This integration was developed with assistance from **ChatGPT (OpenAI GPT-5.3)** during iterative design, debugging, and feature development.
 
-This version ensures **better compatibility** with **InfluxDB, Grafana**, and **Hubitat Dashboard**, making energy monitoring more **accurate and intuitive**.
-### v1.1.0 (2026-01-18)
-- Automatic token refresh when API returns HTTP 401, with an immediate retry of the failed fetch once the refresh succeeds.
-- Throttled refresh attempts to avoid rapid retry storms (minimum 60 seconds between automatic refresh attempts).
-- Differentiation between network/server failures and authentication failures — network outages won't force manual authentication and will recover automatically when connectivity returns.
-- Backoff strategy for network-related refresh failures (retry every 5 minutes).
-- Cap authentication failure retries (5 attempts) before requiring manual Authenticate and setting state.authStatus accordingly.
-- Updated authenticate() to clear manual-auth flags and failure counters on success.
-- Updated scheduling behavior: updated() now unschedules only the data retrieval job instead of all scheduled jobs.
+## Version History
+
+### v1.1.2 (2026-03-24)
+- Fixed HTTP 401 handling when returned via exception path during data fetch
+- Added fetch health monitoring (success/failure tracking)
+- Added configurable health notifications
+- Implemented single failure alert per outage
+- Added optional recovery notifications
+- Added manual authentication alerts
+- Reset health tracking after successful authentication or token refresh
+- Code cleanup and helper method consolidation
+
 ### v1.1.1 (2026-01-19)
-- Hardened recovery from temporary network and power outages.
-- Automatic data fetch resumes once connectivity returns (no manual Authenticate needed).
-- Explicit numeric Emporia deviceGid tracking to prevent stalled fetch scheduling.
-- Safer refresh behavior:
-  - Child device refresh updates its parent Emporia device only.
-  - Optional full refresh available from the parent device.
-- Added driver version tracking to Parent and Child drivers.
+- Fix initialize() syntax error
+- Ensure pending flags are initialized
+- Use numeric GID list for fetch-all
+- Prevent unscheduling unrelated jobs
+- Safer runIn callbacks
+
+### v1.1.0 (2026-01-18)
+- Automatic token refresh on HTTP 401
+- Network-aware retry/backoff logic
+- Fetch retry throttling
+- Updated authenticate() to reset manual auth flags
+- Scheduling improvements
+
+
