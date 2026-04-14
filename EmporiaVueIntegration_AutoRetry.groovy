@@ -16,7 +16,7 @@
 
 import groovy.json.*
 
-static String version() { return '1.1.2-autoretry.1' }
+static String version() { return '1.1.2-autoretry.2' }
 
 definition(
     name: "EmporiaVueIntegration_AutoRetry",

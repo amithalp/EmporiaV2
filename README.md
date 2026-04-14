@@ -196,6 +196,10 @@ This integration was developed with assistance from **ChatGPT (OpenAI GPT-5.3)**
 
 ## Version History
 
+### v1.1.2-autoretry.2 (2026-04-14)
+- Added `EmporiaVueIntegration_AutoRetry.groovy` app variant that continues token refresh attempts on slow backoff even after `manualAuthRequired=true` (prevents indefinite “stuck” state after transient outages/misclassification).
+- Documented AutoRetry variant in README.
+
 ### v1.1.2 (2026-03-24)
 - Fixed HTTP 401 handling when returned via exception path during data fetch
 - Added fetch health monitoring (success/failure tracking)
