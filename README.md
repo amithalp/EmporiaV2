@@ -26,6 +26,7 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
 - Copy the **app** and **drivers** code into Hubitat.
 - Install:
   - **EmporiaVueIntegration** (App)
+  - **EmporiaVueIntegration_AutoRetry** (App, optional)
   - **EmporiaVueParentDriver** (Parent Device Driver)
   - **Emporia Circuit Driver** (Child Device Driver)
 
@@ -63,6 +64,14 @@ This project integrates **Emporia Vue** devices into the **Hubitat** platform, e
   - **Network/server failures** retry automatically with backoff.
   - **Authentication failures** retry a limited number of times before requiring manual re-authentication.
 - **Manual Authenticate** is required only if the refresh token is invalid or repeated refresh attempts fail.
+
+### Optional: AutoRetry App Variant (recommended for unattended recovery)
+This repository also includes **`EmporiaVueIntegration_AutoRetry.groovy`**, which installs as a separate Hubitat app named **EmporiaVueIntegration_AutoRetry**.
+
+It is functionally the same as the main app, except for one behavior change:
+- If the app enters `manualAuthRequired=true` due to repeated refresh-token authorization failures, it will **continue attempting token refresh in the background** on a **slow backoff schedule** (starting around 60 minutes and doubling up to a 12-hour cap).
+
+This helps prevent the integration from getting “stuck” indefinitely in manual-auth-required mode after transient outages or misclassified failures, while still notifying you that manual authentication may be needed.
 
 ### Device Management
 - **Discover Devices**: Lists available **Emporia Vue** devices.
