@@ -1,17 +1,86 @@
 /* ----------------------------------------------------------------------------------------------------------------
- * EmporiaVueIntegration_AutoRetry
- *
- * This is a forked variant of EmporiaVueIntegration (v1.1.2) intended for safer unattended recovery:
- * - Keeps the original behavior, but avoids getting permanently "wedged" in manualAuthRequired after transient issues.
- * - When manualAuthRequired becomes true, the app will continue to attempt token refresh on a slow backoff schedule.
- *
- * Original source: https://github.com/amithalp/EmporiaV2
+ * TODO
+ * TBD
  * ----------------------------------------------------------------------------------------------------------------
  */
-/**
- * NOTE
- * - This file is intentionally separate so you can keep your original app code unchanged.
- * - Install in Hubitat as a NEW app (different name) so you can switch between them.
+
+/*****************************************************************************************************************
+ *  Raw Source: https://github.com/amithalp/EmporiaV2
+ *
+ *  License
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is
+ *  distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and limitations under the License.
+ *
+ *  Development Notes
+ *  This application was developed with the assistance of ChatGPT during iterative design, debugging,
+ *  and feature development.
+ *
+ *  AI Assistant Version
+ *  ChatGPT GPT-5.3 (OpenAI)
+ *
+ *  Modification History
+ *  Date           Author          Change
+ *  ---------------------------------------------------------------------------------------------------------------
+ *  2025-01-13     amithalp        v1.0.0  Initial public release
+ *
+ *  2025-01-14     amithalp        v1.0.1  Fix rescheduling upon update
+ *
+ *  2025-02-06     amithalp        v1.0.2  Add functionality to update and delete devices in Hubitat based on
+ *                                        changes on the Emporia side (circuit name, merging and unmerging circuits).
+ *                                        This occurs only when the user clicks the
+ *                                        "Create / Update / Delete Hubitat Devices" button.
+ *
+ *  2025-02-15     amithalp        v1.0.3  Minor layout improvements
+ *
+ *  2025-03-16     amithalp        v1.0.4  Add support for multiple and nested devices.
+ *                                        Improved device labeling to support multiple Emporia units.
+ *
+ *  2025-03-25     amithalp        v1.0.5  Add rescheduling for refreshToken() if token refresh fails.
+ *
+ *  2026-01-18     amithalp        v1.1.0  Add automatic token refresh on HTTP 401 responses.
+ *                                        Implement network-aware retry/backoff.
+ *                                        Add fetch retry throttling.
+ *                                        Update authenticate() to reset manual authentication flags.
+ *                                        Fix scheduling behavior.
+ *
+ *  2026-01-19     amithalp        v1.1.1  Fix initialize() syntax issue.
+ *                                        Ensure pending flags are initialized.
+ *                                        Use numeric GID list for fetch-all operations.
+ *                                        Prevent unscheduling unrelated jobs.
+ *                                        Safer runIn() callbacks.
+ *
+ *  2026-03-24     amithalp        v1.1.2  Fix HTTP 401 handling when returned via exception path during data fetch.
+ *                                        Add fetch health monitoring (success / failure tracking).
+ *                                        Add configurable health notifications:
+ *                                          • user-selectable notification devices
+ *                                          • customizable failure and recovery messages
+ *                                          • configurable thresholds (failed attempts and/or failure duration)
+ *                                        Implement single alert per outage with optional recovery alert.
+ *                                        Add immediate notification when manual authentication is required.
+ *                                        Reset health tracking after successful authentication or token refresh.
+ *                                        General code cleanup and helper method consolidation.
+ * 2026-04-15    amithalp          v1.1.3  - Avoid getting permanently "wedged" in manualAuthRequired after transient issues.
+ *                                         - When manualAuthRequired becomes true, the app will continue to attempt token refresh on a slow backoff schedule   
+ *
+ *****************************************************************************************************************/
+/* ----------------------------------------------------------------------------------------------------------------
+ * EmporiaVueIntegration
+ *
+ * Hubitat application for integrating Emporia Vue energy monitoring devices.
+ *
+ * Core responsibilities:
+ *  • Authentication and token lifecycle management
+ *  • Automatic token refresh
+ *  • Device discovery
+ *  • Hubitat device creation, update, and removal
+ *  • Periodic data retrieval from the Emporia cloud API
+ *  • Integration health monitoring and notification
  */
 
 import groovy.json.*
