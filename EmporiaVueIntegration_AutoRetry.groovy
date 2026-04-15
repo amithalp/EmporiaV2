@@ -16,10 +16,10 @@
 
 import groovy.json.*
 
-static String version() { return '1.1.2-autoretry.2' }
+static String version() { return '1.1.3' }
 
 definition(
-    name: "EmporiaVueIntegration_AutoRetry",
+    name: "EmporiaVueIntegration",
     namespace: "amithalp",
     author: "Amit Halperin",
     description: "Emporia Vue integration for Hubitat with token management and device creation (auto-retry token refresh even after manual-auth flag).",
