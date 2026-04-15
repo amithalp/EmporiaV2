@@ -65,8 +65,8 @@
  *                                        Add immediate notification when manual authentication is required.
  *                                        Reset health tracking after successful authentication or token refresh.
  *                                        General code cleanup and helper method consolidation.
- * 2026-04-15    amithalp          v1.1.3  - Avoid getting permanently "wedged" in manualAuthRequired after transient issues.
- *                                         - When manualAuthRequired becomes true, the app will continue to attempt token refresh on a slow backoff schedule   
+ *  2026-04-15    amithalp         v1.1.3 - Avoid getting permanently "wedged" in manualAuthRequired after transient issues.
+ *                                        - When manualAuthRequired becomes true, the app will continue to attempt token refresh on a slow backoff schedule   
  *
  *****************************************************************************************************************/
 /* ----------------------------------------------------------------------------------------------------------------
