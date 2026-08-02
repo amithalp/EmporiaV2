@@ -68,6 +68,13 @@
  *  2026-04-15    amithalp         v1.1.3 - Avoid getting permanently "wedged" in manualAuthRequired after transient issues.
  *                                        - When manualAuthRequired becomes true, the app will continue to attempt token refresh on a slow backoff schedule   
  *
+ *  2026-08-02     amithalp        v1.1.4  Add compatibility with Hubitat HTTP responses returned as parsed Map objects.
+ *                                        Fix manual authentication and token refresh response parsing.
+ *                                        Prevent parsing/runtime errors from being counted as invalid authentication.
+ *                                        Preserve fetch outage state until a real data fetch succeeds.
+ *                                        Improve throttled token-refresh retry behavior and scheduled callbacks.
+ *                                        Reduce excessive raw API response logging.
+ *
  *****************************************************************************************************************/
 /* ----------------------------------------------------------------------------------------------------------------
  * EmporiaVueIntegration
@@ -85,11 +92,12 @@
 
 import groovy.json.*
 
-static String version() { return '1.1.3' }
+static String version() { return '1.1.4' }
 
 definition(
     name: "EmporiaVueIntegration",
     namespace: "amithalp",
+    menu: "Integrations",
     author: "Amit Halperin",
     description: "Emporia Vue integration for Hubitat with token management and device creation (auto-retry token refresh even after manual-auth flag).",
     category: "Utility",
@@ -226,7 +234,7 @@ def installed() {
 
 def updated() {
     log.info "EmporiaVueIntegration_AutoRetry app updated"
-    unschedule(fetchData) // Only unschedule the data fetch job
+    unschedule("fetchData") // Only unschedule the data fetch job
     initialize()
 }
 
@@ -340,9 +348,58 @@ def updateCredentials() {
     }
 }
 
+/*
+ * Normalize Hubitat HTTP response data.
+ * Depending on platform/runtime behavior, JSON may already be parsed as a Map,
+ * returned as a String, or exposed through a legacy text-compatible object.
+ */
+private Map parseHttpResponseData(def rawData) {
+    if (rawData == null) {
+        return [:]
+    }
+
+    if (rawData instanceof Map) {
+        return rawData as Map
+    }
+
+    if (rawData instanceof String) {
+        String text = rawData.toString()
+        return text ? (new JsonSlurper().parseText(text) as Map) : [:]
+    }
+
+    try {
+        String text = rawData.getText('UTF-8')
+        return text ? (new JsonSlurper().parseText(text) as Map) : [:]
+    } catch (e) {
+        log.error "Unable to parse HTTP response data: ${e?.message}"
+        return [:]
+    }
+}
+
+private String httpResponseDataToText(def rawData) {
+    if (rawData == null) {
+        return ""
+    }
+
+    if (rawData instanceof Map) {
+        return JsonOutput.toJson(rawData)
+    }
+
+    if (rawData instanceof String) {
+        return rawData.toString()
+    }
+
+    try {
+        return rawData.getText('UTF-8') ?: ""
+    } catch (e) {
+        log.warn "Unable to convert HTTP response data to text: ${e?.message}"
+        return ""
+    }
+}
+
 def authenticate() {
     if (!settings.email || !settings.password) {
-        state.authStatus = " Error: Email and password must be provided for authentication. "
+        state.authStatus = "Error: Email and password must be provided for authentication."
         log.error "Authentication failed: Email and password are required."
         return
     }
@@ -364,72 +421,115 @@ def authenticate() {
 
     try {
         httpPost(params) { resp ->
+            def rawData = resp.getData()
+
             if (resp.status == 200) {
-                def responseData = new JsonSlurper().parseText(resp.getData().getText('UTF-8'))
-                if (responseData.AuthenticationResult) {
-                    state.idToken = responseData.AuthenticationResult.IdToken
-                    state.accessToken = responseData.AuthenticationResult.AccessToken
-                    state.refreshToken = responseData.AuthenticationResult.RefreshToken
-                    state.tokenExpiry = now() + (responseData.AuthenticationResult.ExpiresIn * 1000)
+                Map responseData = parseHttpResponseData(rawData)
+                def authenticationResult = responseData?.AuthenticationResult
 
-                    state.manualAuthRequired = false
-                    state.authFailureCount = 0
-                    state.refreshFailureCount = 0
-                    state.lastRefreshAttempt = 0
-                    state.pendingFetchDeviceGid = null
-                    state.pendingRetry = false
-                    state.manualAuthBackoffMinutes = 60
-                    state.manualAuthNextRetryAt = 0L
-
-                    state.authStatus = " Authentication successful. Token expires at ${new Date(state.tokenExpiry)}. "
-                    resetFetchHealthState()
-                    log.info "Authentication successful for user: ${settings.email}"
-
-                    scheduleTokenRefresh()
-                } else {
-                    state.authStatus = " Error: AuthenticationResult missing in response. "
-                    log.error "Authentication failed: Missing AuthenticationResult in response."
+                if (!authenticationResult) {
+                    state.authStatus = "Error: AuthenticationResult missing in response."
+                    log.error "Authentication failed: AuthenticationResult missing in response."
+                    return
                 }
-            } else {
-                state.authStatus = " Error: Authentication failed. HTTP status: ${resp.status}. "
-                log.error "Authentication failed. HTTP Status: ${resp.status}"
+
+                if (!authenticationResult.IdToken ||
+                    !authenticationResult.AccessToken ||
+                    !authenticationResult.RefreshToken) {
+                    state.authStatus = "Error: Authentication response is missing one or more required tokens."
+                    log.error "Authentication failed: required tokens missing from AuthenticationResult."
+                    return
+                }
+
+                state.idToken = authenticationResult.IdToken
+                state.accessToken = authenticationResult.AccessToken
+                state.refreshToken = authenticationResult.RefreshToken
+
+                Long expiresInSeconds = (authenticationResult.ExpiresIn ?: 3600) as Long
+                state.tokenExpiry = now() + (expiresInSeconds * 1000L)
+
+                state.manualAuthRequired = false
+                state.authFailureCount = 0
+                state.refreshFailureCount = 0
+                state.tokenRefreshRetries = 0
+                state.lastRefreshAttempt = 0L
+                state.pendingFetchDeviceGid = null
+                state.pendingRetry = false
+                state.manualAuthBackoffMinutes = 60
+                state.manualAuthNextRetryAt = 0L
+
+                state.authStatus = "Authentication successful. Token expires at ${new Date(state.tokenExpiry)}."
+                resetFetchHealthState()
+
+                unschedule("refreshToken")
+                unschedule("scheduledForcedTokenRefresh")
+                scheduleTokenRefresh()
+
+                log.info "Authentication successful for user: ${settings.email}"
+                return
             }
+
+            String responseText = httpResponseDataToText(rawData)
+            String lower = responseText.toLowerCase()
+            String reason = lower.contains("notauthorized") || lower.contains("not authorized") ?
+                "Credentials were rejected." : "HTTP status ${resp.status}."
+
+            state.authStatus = "Error: Authentication failed. ${reason}"
+            log.error "Authentication failed. ${reason}"
         }
     } catch (e) {
-        state.authStatus = " Error during authentication: ${e.message} "
-        log.error "Authentication error: ${e.message}"
+        String msg = e?.message?.toString() ?: "Unknown authentication error"
+        state.authStatus = "Error during authentication: ${msg}"
+        log.error "Authentication error: ${msg}"
     }
 }
 
 def scheduleTokenRefresh() {
     if (state.tokenExpiry) {
-        def refreshTime = (state.tokenExpiry - now() - 300000) / 1000 // Refresh 5 minutes before expiry
+        Long refreshTime = ((state.tokenExpiry as Long) - now() - 300000L) / 1000L // Refresh 5 minutes before expiry
+
         if (refreshTime > 0) {
-            runIn(refreshTime.toInteger(), refreshToken)
+            unschedule("refreshToken")
+            runIn(refreshTime.toInteger(), "refreshToken")
             log.info "Token refresh scheduled in ${refreshTime.toInteger()} seconds."
-            state.authStatus = " Token refresh scheduled. Expires at ${new Date(state.tokenExpiry)}. "
+            state.authStatus = "Token refresh scheduled. Expires at ${new Date(state.tokenExpiry)}."
         } else {
             log.warn "Token already expired or too close to expiry. Immediate refresh required."
             refreshToken()
         }
     } else {
         log.warn "Token expiry time not available. Cannot schedule refresh."
-        state.authStatus = " Unable to schedule token refresh: Token expiry unavailable. "
+        state.authStatus = "Unable to schedule token refresh: Token expiry unavailable."
     }
 }
 
 // refreshToken(forceRetry = false) - forceRetry indicates caller expects a retry of pending fetch after success
 def refreshToken(forceRetry = false) {
-    // AutoRetry change:
-    // - Do NOT permanently block refresh attempts just because manualAuthRequired is true.
-    // - Instead, allow refresh attempts on a slow backoff schedule (plus immediate attempts when forceRetry is true).
+    /*
+     * AutoRetry behavior:
+     * - Do not permanently block refresh attempts when manualAuthRequired is true.
+     * - Allow slow background refresh attempts according to manualAuthNextRetryAt.
+     * - Allow immediate refresh attempts when forceRetry is true.
+     */
     if (state.manualAuthRequired && !forceRetry) {
         Long nextAt = (state.manualAuthNextRetryAt ?: 0L) as Long
+
         if (nextAt > now()) {
-            if (state.debugLog) log.debug "manualAuthRequired=true; next refresh attempt scheduled at ${new Date(nextAt)}. Skipping for now."
+            if (state.debugLog) {
+                log.debug "manualAuthRequired=true; next refresh attempt scheduled at ${new Date(nextAt)}. Skipping for now."
+            }
             return
         }
-        if (state.debugLog) log.debug "manualAuthRequired=true; attempting slow backoff refresh now."
+
+        if (state.debugLog) {
+            log.debug "manualAuthRequired=true; attempting slow backoff refresh now."
+        }
+    }
+
+    if (!state.refreshToken) {
+        log.error "Token refresh cannot proceed because no refresh token is stored."
+        handleRefreshFailure('auth')
+        return
     }
 
     def authEndpoint = "https://cognito-idp.us-east-2.amazonaws.com/"
@@ -448,51 +548,107 @@ def refreshToken(forceRetry = false) {
 
     try {
         httpPost(params) { resp ->
-            if (resp.status == 200) {
-                def responseData = new JsonSlurper().parseText(resp.getData().getText('UTF-8'))
-                if (responseData.AuthenticationResult) {
-                    state.idToken = responseData.AuthenticationResult.IdToken
-                    state.tokenExpiry = now() + (responseData.AuthenticationResult.ExpiresIn * 1000)
-                    state.authStatus = " Token refreshed successfully. Expires at ${new Date(state.tokenExpiry)}. "
-                    log.info "Token refreshed successfully. New expiry: ${new Date(state.tokenExpiry)}."
-                    state.tokenRefreshRetries = 0
-                    state.refreshFailureCount = 0
-                    state.authFailureCount = 0
-                    state.manualAuthRequired = false
-                    state.manualAuthBackoffMinutes = 60
-                    state.manualAuthNextRetryAt = 0L
-                    resetFetchHealthState()
-                    scheduleTokenRefresh()
+            def rawData = resp.getData()
 
-                    if (forceRetry || state.pendingRetry) {
-                        runIn(2, performPendingFetch)
-                    }
-                } else {
+            if (resp.status == 200) {
+                Map responseData = parseHttpResponseData(rawData)
+                def authenticationResult = responseData?.AuthenticationResult
+
+                if (!authenticationResult) {
                     log.error "Token refresh response missing AuthenticationResult."
-                    handleRefreshFailure('auth')
-                }
-            } else {
-                def responseText = resp.getData()?.getText('UTF-8') ?: ""
-                def lower = responseText.toLowerCase()
-                if (lower.contains('notauthorized') || lower.contains('not authorized') || lower.contains('not_authorized')) {
-                    log.error "Token refresh failed: Cognito NotAuthorizedException or invalid refresh token."
-                    handleRefreshFailure('auth')
-                } else {
-                    log.warn "Token refresh failed with HTTP status ${resp.status}. Will treat as network/server error and retry with backoff."
                     handleRefreshFailure('network')
+                    return
                 }
+
+                if (!authenticationResult.IdToken) {
+                    log.error "Token refresh response missing IdToken."
+                    handleRefreshFailure('network')
+                    return
+                }
+
+                state.idToken = authenticationResult.IdToken
+
+                // Cognito refresh responses do not always include a replacement refresh token.
+                if (authenticationResult.RefreshToken) {
+                    state.refreshToken = authenticationResult.RefreshToken
+                }
+                if (authenticationResult.AccessToken) {
+                    state.accessToken = authenticationResult.AccessToken
+                }
+
+                Long expiresInSeconds = (authenticationResult.ExpiresIn ?: 3600) as Long
+                state.tokenExpiry = now() + (expiresInSeconds * 1000L)
+                state.authStatus = "Token refreshed successfully. Expires at ${new Date(state.tokenExpiry)}."
+
+                state.tokenRefreshRetries = 0
+                state.refreshFailureCount = 0
+                state.authFailureCount = 0
+                state.manualAuthRequired = false
+                state.manualAuthBackoffMinutes = 60
+                state.manualAuthNextRetryAt = 0L
+
+                // Do not reset fetch-health state here. A successful data fetch confirms recovery.
+                unschedule("scheduledForcedTokenRefresh")
+                scheduleTokenRefresh()
+
+                log.info "Token refreshed successfully. New expiry: ${new Date(state.tokenExpiry)}."
+
+                if (forceRetry || state.pendingRetry) {
+                    runIn(2, "performPendingFetch")
+                }
+                return
+            }
+
+            String responseText = httpResponseDataToText(rawData)
+            String lower = responseText.toLowerCase()
+
+            Boolean isAuthorizationFailure =
+                lower.contains("notauthorized") ||
+                lower.contains("not authorized") ||
+                lower.contains("not_authorized") ||
+                lower.contains("invalid refresh token") ||
+                lower.contains("refresh token has expired") ||
+                lower.contains("refresh token is expired")
+
+            if (isAuthorizationFailure) {
+                log.error "Token refresh failed: Cognito rejected the refresh token."
+                handleRefreshFailure('auth')
+            } else {
+                log.warn "Token refresh failed with HTTP status ${resp.status}. Treating this as a network/server failure and retrying with backoff."
+                handleRefreshFailure('network')
             }
         }
     } catch (e) {
-        def msg = e?.message?.toString() ?: ""
-        def lower = msg.toLowerCase()
-        def isNetworkError = lower.contains('unknownhost') || lower.contains('connect') || lower.contains('timed out') || lower.contains('timeout') || lower.contains('connection refused')
-        if (isNetworkError) {
+        String msg = e?.message?.toString() ?: ""
+        String lower = msg.toLowerCase()
+
+        Boolean isAuthorizationFailure =
+            lower.contains("notauthorized") ||
+            lower.contains("not authorized") ||
+            lower.contains("not_authorized") ||
+            lower.contains("invalid refresh token") ||
+            lower.contains("refresh token has expired") ||
+            lower.contains("refresh token is expired")
+
+        Boolean isNetworkError =
+            lower.contains("unknownhost") ||
+            lower.contains("connectexception") ||
+            lower.contains("connection refused") ||
+            lower.contains("timed out") ||
+            lower.contains("timeout") ||
+            lower.contains("socketexception") ||
+            lower.contains("no route to host")
+
+        if (isAuthorizationFailure) {
+            log.error "Token refresh authorization failed: ${msg}"
+            handleRefreshFailure('auth')
+        } else if (isNetworkError) {
             log.warn "Network error during token refresh: ${msg}. Will back off and retry."
             handleRefreshFailure('network')
         } else {
-            log.error "Unexpected error during token refresh: ${msg}."
-            handleRefreshFailure('auth')
+            // Runtime/parsing errors are not proof of invalid credentials.
+            log.error "Unexpected error while processing token refresh: ${msg}. Treating it as a temporary processing/server failure."
+            handleRefreshFailure('network')
         }
     }
 }
@@ -502,7 +658,7 @@ def handleRefreshFailure(type = 'network') {
         state.refreshFailureCount = (state.refreshFailureCount ?: 0) + 1
         def retryDelaySec = 5 * 60
         log.warn "Scheduling token refresh retry #${state.refreshFailureCount} in ${retryDelaySec} seconds (network/server error)."
-        runIn(retryDelaySec, refreshToken)
+        runIn(retryDelaySec, "refreshToken")
         state.authStatus = " Token refresh failed due to network/server error. Will retry in ${retryDelaySec/60} minutes. "
         return
     }
@@ -525,7 +681,7 @@ def handleRefreshFailure(type = 'network') {
         Long nextAt = now() + (minutes * 60 * 1000L)
         state.manualAuthNextRetryAt = nextAt
         log.warn "manualAuthRequired=true. Will continue slow refresh attempts every ~${minutes} minutes. Next attempt at ${new Date(nextAt)}."
-        runIn((minutes * 60) as Integer, refreshToken)
+        runIn((minutes * 60) as Integer, "refreshToken")
 
         // increase backoff for next time, capped
         state.manualAuthBackoffMinutes = Math.min(minutes * 2, 12 * 60) as Integer
@@ -535,7 +691,7 @@ def handleRefreshFailure(type = 'network') {
     } else {
         def retryDelaySec = 60
         log.warn "Token refresh auth failure #${state.authFailureCount}. Will retry in ${retryDelaySec} seconds (up to ${maxAuthAttempts} attempts)."
-        runIn(retryDelaySec, refreshToken)
+        runIn(retryDelaySec, "refreshToken")
         state.authStatus = " Token refresh authorization failed (attempt ${state.authFailureCount}/${maxAuthAttempts}). Will retry in ${retryDelaySec} seconds. "
         return
     }
@@ -626,7 +782,7 @@ def createSelectedDevices() {
         deviceId
     }
 
-    runIn(20, deleteOrphanedDevices)
+    runIn(20, "deleteOrphanedDevices")
 
     // ensure scheduling exists once parents exist
     if (settings.retrievalFrequency) scheduleDataRetrieval()
@@ -672,7 +828,7 @@ def fetchInitialDeviceData(deviceGid) {
     }
 }
 
-//------------------------------- Data retrival handling -------------------------------------------------------------------------------------------------
+//------------------------------- Data retrieval handling -------------------------------------------------------------------------------------------------
 def applySettings() {
     log.info "Applying settings... Current: Frequency=${state.retrievalFrequency}, Unit=${state.energyUnit}, DateFormat=${state.dateFormat}"
 
@@ -702,23 +858,23 @@ def scheduleDataRetrieval() {
     }
 
     try {
-        unschedule(fetchData)
+        unschedule("fetchData")
 
         switch (settings.retrievalFrequency) {
             case "1MIN":
-                schedule("0 * * * * ?", fetchData)
+                schedule("0 * * * * ?", "fetchData")
                 break
             case "15MIN":
-                schedule("0 */15 * * * ?", fetchData)
+                schedule("0 */15 * * * ?", "fetchData")
                 break
             case "1H":
-                schedule("0 0 * * * ?", fetchData)
+                schedule("0 0 * * * ?", "fetchData")
                 break
             case "1D":
-                schedule("0 0 0 * * ?", fetchData)
+                schedule("0 0 0 * * ?", "fetchData")
                 break
             case "1W":
-                schedule("0 0 0 ? * 1", fetchData)
+                schedule("0 0 0 ? * 1", "fetchData")
                 break
             default:
                 log.error "Unsupported retrieval frequency: ${settings.retrievalFrequency}"
@@ -753,7 +909,10 @@ def fetchData(deviceGid = null) {
     try {
         httpGet(params) { resp ->
             if (resp.status == 200) {
-                if (state.debugLog) log.debug "Raw API Response: ${resp.data}"
+                if (state.debugLog) {
+                    Integer responseDeviceCount = resp.data?.deviceListUsages?.devices?.size() ?: 0
+                    log.debug "API response received for ${responseDeviceCount} device(s)."
+                }
 
                 def data = resp.data?.deviceListUsages?.devices
                 if (!data) {
@@ -902,21 +1061,32 @@ def processChannelUsages(parentDevice, channelUsages, parentDeviceId) {
 }
 
 private void attemptRefreshAndRetry(deviceGid = null) {
-    // AutoRetry: still throttle refresh attempts, but do not block just because manualAuthRequired is true.
-    def nowTs = now()
-    def lastAttempt = state.lastRefreshAttempt ?: 0
-    def minIntervalMs = 60 * 1000
+    // Throttle refresh attempts, but schedule the refresh itself rather than another fetch with an expired token.
+    Long nowTs = now()
+    Long lastAttempt = (state.lastRefreshAttempt ?: 0L) as Long
+    Long minIntervalMs = 60L * 1000L
+
+    state.pendingFetchDeviceGid = deviceGid
+    state.pendingRetry = true
 
     if ((nowTs - lastAttempt) < minIntervalMs) {
-        if (state.debugLog) log.debug "Refresh attempt throttled. Last attempt ${(nowTs - lastAttempt)} ms ago."
-        state.pendingFetchDeviceGid = deviceGid
-        runIn(((minIntervalMs - (nowTs - lastAttempt)) / 1000).toInteger() + 5, performPendingFetch)
+        Long remainingMs = minIntervalMs - (nowTs - lastAttempt)
+        Integer delaySeconds = Math.max(((remainingMs / 1000L) as Integer) + 2, 2)
+
+        if (state.debugLog) {
+            log.debug "Refresh attempt throttled. Scheduling forced token refresh in ${delaySeconds} seconds."
+        }
+
+        runIn(delaySeconds, "scheduledForcedTokenRefresh")
         return
     }
 
     state.lastRefreshAttempt = nowTs
-    state.pendingFetchDeviceGid = deviceGid
-    state.pendingRetry = true
+    refreshToken(true)
+}
+
+def scheduledForcedTokenRefresh() {
+    state.lastRefreshAttempt = now()
     refreshToken(true)
 }
 
@@ -1101,4 +1271,3 @@ private void sendManualAuthRequiredNotificationIfNeeded() {
 
     log.warn "Manual authentication required notification sent."
 }
-
