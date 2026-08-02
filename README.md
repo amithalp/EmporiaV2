@@ -1,227 +1,326 @@
-# EmporiaVue Integration for Hubitat
 
-This project integrates **Emporia Vue** devices into the **Hubitat** platform, enabling real-time energy monitoring and management. The integration supports **token-based authentication**, **device discovery**, **scheduled data retrieval**, **dynamic updates to child devices**, and **health monitoring with notifications**.
+# Emporia Vue Integration for Hubitat
 
-## Features
-- **Authentication**: Secure **token-based authentication** with Emporia’s API.
-- **Automatic Token Refresh**: Automatically refreshes tokens before expiry and retries failed fetches after a successful refresh.
-- **Device Discovery**: Automatically **discovers Emporia devices** linked to your account.
-- **Child Device Management**: Creates **Hubitat child devices** for each circuit, ensuring full synchronization.
-- **Data Retrieval**: Supports **scheduled** and **manual** retrieval of energy usage.
-- **Health Monitoring & Notifications**:
-  - Tracks data fetch success and failure
-  - Detects prolonged fetch failures
-  - Supports **configurable notifications**
-  - Sends a **single alert per outage**
-  - Sends a **recovery notification** when normal operation resumes
-  - Sends an **immediate alert** when manual authentication is required
-- **Device Labeling**: Ensures **unique labels** to avoid conflicts in **InfluxDB and Grafana**.
-- **Custom Attributes**: Updates child devices with:
-  - `usage`, `usagePercentage`, `power`, `energy`
-  - `powerUnit`, `energyUnit`, `retrievalFrequency`, `lastUpdated`
+> A full-featured Hubitat integration for **Emporia Vue** energy monitors with automatic authentication management, device synchronization, scheduled data retrieval, health monitoring, and configurable notifications.
 
-## Installation
+---
 
-### 1. **Add the App and Drivers to Hubitat**
-- Copy the **app** and **drivers** code into Hubitat.
-- Install:
-  - **EmporiaVueIntegration** (App)
-  - **EmporiaVueIntegration_AutoRetry** (App, optional)
-  - **EmporiaVueParentDriver** (Parent Device Driver)
-  - **Emporia Circuit Driver** (Child Device Driver)
+## Overview
 
-### 2. **Install the App**
-- In Hubitat, navigate to **Apps** → Add **EmporiaVueIntegration**.
+Emporia Vue Integration brings Emporia energy monitoring devices into Hubitat by creating Parent and Child devices that mirror the structure of your Emporia account.
 
-### 3. **Configure Authentication**
-- Enter **Emporia email and password**.
-- Click **"Authenticate"** to initiate **token-based authentication**.
+The integration is designed for unattended operation and includes automatic token management, intelligent retry logic, device synchronization, configurable health monitoring, and optional notifications when user intervention is required.
 
-### 4. **Discover Devices**
-- Click **"Discover Devices"** to find Emporia Vue devices.
-- Select devices to **import as Parent and Child Devices**.
+The project supports multiple Emporia Vue devices, nested circuits, and automatic synchronization when devices or circuits are added, renamed, merged, unmerged, or removed in the Emporia cloud.
 
-### 5. **Configure Data Retrieval**
-- Choose **retrieval frequency**, **energy units**, and **date format**.
-- Click **Save Settings**.
+---
 
-### 6. **Optional: Configure Health Notifications**
-- Enable **Health Monitoring Notifications**.
-- Select one or more **notification devices**.
-- Define custom **failure** and **recovery** messages.
-- Configure thresholds for alerts:
-  - after **X failed fetch attempts**
-  - after **X minutes without successful data retrieval**
-  - or **either condition**
+# Features
 
-## Usage
+## Authentication
 
-### Authentication
-- **Authenticate**: Login using **Emporia credentials**.
-- **Token Refresh**: Tokens **automatically refresh** before expiration.
-- If the API returns **HTTP 401**, the app attempts token refresh automatically and retries the failed fetch.
-- Network/server failures are treated differently from authentication failures:
-  - **Network/server failures** retry automatically with backoff.
-  - **Authentication failures** retry a limited number of times before requiring manual re-authentication.
-- **Manual Authenticate** is required only if the refresh token is invalid or repeated refresh attempts fail.
+- Secure Cognito authentication
+- Automatic token refresh before expiration
+- Automatic recovery from HTTP 401 responses
+- Intelligent distinction between:
+  - Authentication failures
+  - Network/server failures
+- Manual authentication required only after repeated authorization failures
 
-### Optional: AutoRetry App Variant (recommended for unattended recovery)
-This repository also includes **`EmporiaVueIntegration_AutoRetry.groovy`**, which installs as a separate Hubitat app named **EmporiaVueIntegration_AutoRetry**.
+## Reliability
 
-It is functionally the same as the main app, except for one behavior change:
-- If the app enters `manualAuthRequired=true` due to repeated refresh-token authorization failures, it will **continue attempting token refresh in the background** on a **slow backoff schedule** (starting around 60 minutes and doubling up to a 12-hour cap).
+- Automatic retry after successful token refresh
+- Network-aware retry and backoff
+- Configurable fetch intervals
+- Health monitoring
+- Optional notifications
+- Recovery notifications
+- Compatible with Hubitat Platform 2.5.x HTTP response handling
 
-This helps prevent the integration from getting “stuck” indefinitely in manual-auth-required mode after transient outages or misclassified failures, while still notifying you that manual authentication may be needed.
+## Device Management
 
-### Device Management
-- **Discover Devices**: Lists available **Emporia Vue** devices.
-- **Create/Update/Delete Devices**:
-  - **Adds new circuits** detected.
-  - **Updates existing circuits** if changed in the Emporia app.
-  - **Removes orphaned circuits** that no longer exist.
+- Automatic discovery
+- Parent device creation
+- Child device creation
+- Multiple Emporia Vue devices per account
+- Nested circuit support
+- Automatic synchronization
+- Automatic orphan removal
+- Automatic label updates
 
-### Device Labeling
-- Devices include **their parent device** in their **label** to prevent **naming conflicts** in **InfluxDB/Grafana**.
+## Monitoring
 
-**Example Naming Updates**:
-- **Before**: `"Main"`
-- **After**: `"Emp-406720-Main"` and `"Emp-430515-Main"`
+Child devices expose:
 
-Labels are **automatically updated**.
+- usage
+- usagePercentage
+- power
+- energy
+- powerUnit
+- energyUnit
+- retrievalFrequency
+- lastUpdated
 
-### Data Retrieval
-- **Scheduled Retrieval**: Runs automatically at the configured interval.
-- **Manual Retrieval**:
-  - Clicking **"Refresh"** on a **child device** refreshes its **parent Emporia device only**.
+---
 
-### Health Monitoring & Notifications
-The app monitors its operational health and can notify users when issues occur.
+# Requirements
 
-Supported behavior:
-- Tracks consecutive data fetch failures
-- Tracks elapsed time since last successful data retrieval
-- Sends a **single notification per outage**
-- Sends an optional **recovery notification** when normal operation resumes
-- Sends an **immediate notification** when `manualAuthRequired` becomes true
+- Hubitat Elevation C-7, C-8 or newer
+- Hubitat Platform 2.5.x or newer
+- Emporia Vue cloud account
+- Internet connection
 
-This approach helps surface real issues while avoiding unnecessary alert noise.
+---
 
-## Attributes
+# Installation
 
-Each **child device** updates with the following attributes:
+## Install Apps
 
-| Attribute | Description |
-|----------|-------------|
-| **usage** | Energy consumption in the last interval |
-| **usagePercentage** | Share of total energy usage |
-| **power** | Instantaneous power consumption |
-| **energy** | Accumulated energy consumption |
-| **powerUnit** | Unit of power (e.g., Watts) |
-| **energyUnit** | Configurable unit (`KilowattHours` / `Dollars`) |
-| **retrievalFrequency** | Data retrieval interval |
-| **lastUpdated** | Timestamp of the last update |
+Install:
 
-## Settings
+- EmporiaVueIntegration
+- EmporiaVueIntegration_AutoRetry (optional)
 
-### Emporia Account Settings
-- **Email**: Your Emporia account email.
-- **Password**: Your Emporia account password.
+## Install Drivers
 
-### Data Retrieval Settings
-- **Retrieval Frequency**: `1MIN`, `15MIN`, `1H`, `1D`, `1W`
-- **Energy Unit**: `KilowattHours` or `Dollars`
-- **Date Format**: `yyyy-MM-dd HH:mm:ss` or `dd-MM-yyyy HH:mm:ss`
+Install:
 
-### Health Notification Settings
-- Enable **Health Notifications**
-- Select **Notification Device(s)**
-- Configure **Failure Notification Message**
-- Configure **Recovery Notification Message**
-- Configure **Failure Thresholds**
-  - number of failed fetch attempts
-  - elapsed minutes since last success
-- Enable optional **Recovery Notification**
+- EmporiaVueParentDriver
+- Emporia Circuit Driver
 
-### Debug Logging
-- **Enable Debug Logging**: Toggle logs **on/off**.
+---
 
-## Debugging and Logs
+# Initial Configuration
 
-Logs provide insight into **authentication**, **token refresh**, **device creation**, **data retrieval**, **health monitoring**, and **attribute updates**.
+1. Enter Emporia credentials.
+2. Authenticate.
+3. Discover devices.
+4. Create / Update / Delete Hubitat devices.
+5. Configure retrieval frequency.
+6. Configure optional health notifications.
 
-### Example Logs
+---
 
-**Successful Authentication**
+# Health Monitoring
 
-app:2242025-03-15 10:10:10.123info Authentication successful. Token expires at 2025-03-15T15:10:10Z.
+The integration continuously monitors data retrieval health.
 
+Supported capabilities:
 
-**Successful Data Fetch**
+- consecutive fetch failure tracking
+- elapsed time since last successful fetch
+- configurable notification thresholds
+- configurable notification devices
+- custom failure messages
+- custom recovery messages
+- one notification per outage
+- optional recovery notification
+- immediate notification when manual authentication becomes required
 
-app:2242025-03-15 11:11:11.123info Fetching data for all monitored devices...
-app:2242025-03-15 11:11:11.456debug Updated child device EmporiaVue406720-2: usage=0.0153, power=921, energy=0.02, powerUnit=Watt.
-app:2242025-03-15 11:11:11.976info Data fetch and update completed successfully.
+Notifications are optional and disabled by default.
 
+---
 
-**Failure Notification**
+# AutoRetry Edition
 
-app:632026-03-25 19:21:23.243warn Sending health notification: Emporia app alert: data fetch is failing.
-app:632026-03-25 19:21:23.267warn Notification command sent to: iPhone Amit
-app:632026-03-25 19:21:23.270warn Health failure notification sent.
+The repository also contains **EmporiaVueIntegration_AutoRetry**.
 
+Unlike the standard app, the AutoRetry edition continues background token refresh attempts after `manualAuthRequired=true` using an exponential backoff schedule (up to approximately 12 hours).
 
-**Recovery Notification**
+This allows unattended recovery after transient authentication or platform issues while still notifying the user when manual authentication may be required.
 
-app:632026-03-25 19:25:01.912warn Sending health notification: Emporia app recovery: data fetch is working again.
-app:632026-03-25 19:25:01.959warn Notification command sent to: iPhone Amit
-app:632026-03-25 19:25:01.966info Health recovery notification sent.
+---
 
+# Device Synchronization
 
-## Known Limitations
+The integration automatically:
 
-- Refreshing a **child device** triggers a data retrieval for its **parent device only**, not for all devices.
-- The integration depends on Emporia cloud API behavior and token lifecycle behavior, which may change over time.
-- Notification delivery depends on the selected Hubitat notification device configuration.
+- discovers new devices
+- creates missing devices
+- updates renamed devices
+- updates labels
+- removes orphaned devices
 
-## Future Enhancements
-- Expose integration health status via a **virtual device attribute** for Rule Machine or automation triggers.
-- Support additional **energy unit conversions**.
-- Continue improving **log clarity and diagnostics**.
+No manual cleanup is normally required.
 
-## Author
-Amit Halperin
+---
+
+# Architecture
+
+```
+Emporia Cloud
+        │
+        ▼
+Hubitat App
+        │
+ ├── Authentication
+ ├── Scheduling
+ ├── Device Discovery
+ ├── Health Monitoring
+ └── API Communication
+        │
+        ▼
+Parent Devices
+        │
+        ▼
+Child Circuit Devices
+```
+
+---
+
+# Settings
+
+## Account
+
+- Email
+- Password
+
+## Retrieval
+
+- 1MIN
+- 15MIN
+- 1H
+- 1D
+- 1W
+
+Energy units:
+
+- KilowattHours
+- Dollars
+
+Date formats:
+
+- yyyy-MM-dd HH:mm:ss
+- dd-MM-yyyy HH:mm:ss
+
+## Notifications
+
+- Enable/Disable
+- Notification devices
+- Failure message
+- Recovery message
+- Failed fetch threshold
+- Failed duration threshold
+- Recovery notification
+
+## Logging
+
+- Debug logging
+
+---
+
+# Troubleshooting
+
+## HTTP 401
+
+The integration automatically attempts:
+
+1. Token refresh
+2. Retry failed fetch
+3. Background retry with backoff (AutoRetry edition)
+
+Manual authentication is only required if refresh authorization repeatedly fails.
+
+## Manual Authentication
+
+If notified that manual authentication is required:
+
+1. Open the app.
+2. Verify credentials.
+3. Click **Authenticate**.
+
+---
+
+# Known Limitations
+
+- Refreshing a child device refreshes only its parent Emporia monitor.
+- The integration depends on the Emporia cloud API.
+- Notification delivery depends on the selected Hubitat notification device.
+
+---
+
+# Future Enhancements
+
+- Integration health virtual device
+- Additional energy unit conversions
+- Additional diagnostics
+- Enhanced dashboard support
+
+---
+
+# Development
+
+Author:
+**Amit Halperin**
+
+License:
+Apache License 2.0
 
 ## Development Notes
-This integration was developed with assistance from **ChatGPT (OpenAI GPT-5.3)** during iterative design, debugging, and feature development.
 
-## Version History
+This integration was developed and continues to be maintained with assistance from **OpenAI ChatGPT**.
 
-### v1.1.2-autoretry.2 (2026-04-14)
-- Added `EmporiaVueIntegration_AutoRetry.groovy` app variant that continues token refresh attempts on slow backoff even after `manualAuthRequired=true` (prevents indefinite “stuck” state after transient outages/misclassification).
-- Documented AutoRetry variant in README.
+ChatGPT was used throughout the project for architecture discussions, implementation assistance, debugging, testing strategies, documentation, and release preparation.
 
-### v1.1.2 (2026-03-24)
-- Fixed HTTP 401 handling when returned via exception path during data fetch
-- Added fetch health monitoring (success/failure tracking)
-- Added configurable health notifications
-- Implemented single failure alert per outage
-- Added optional recovery notifications
+Final design decisions, implementation, validation, testing, and project maintenance remain the responsibility of the project author.
+
+---
+
+# Release Notes
+
+## v1.1.4 (2026-08-02)
+
+### Added
+
+- Compatibility with Hubitat Platform 2.5.1.x parsed HTTP Map responses
+- Shared HTTP response parsing compatibility
+
+### Fixed
+
+- Manual authentication parsing
+- Token refresh parsing
+- HTTP response compatibility
+- Parsing errors incorrectly classified as authentication failures
+
+### Improved
+
+- Authentication robustness
+- Token refresh reliability
+- Overall compatibility with newer Hubitat firmware
+- Internal cleanup
+
+## AutoRetry Edition (2026-04-14)
+
+- Added background refresh attempts after manualAuthRequired
+- Exponential refresh backoff
+- Prevents indefinite stalled authentication state
+
+## v1.1.2 (2026-03-24)
+
+- Improved HTTP 401 handling
+- Added fetch health monitoring
+- Added configurable notifications
+- Added failure and recovery notifications
 - Added manual authentication alerts
-- Reset health tracking after successful authentication or token refresh
-- Code cleanup and helper method consolidation
+- General cleanup
 
-### v1.1.1 (2026-01-19)
-- Fix initialize() syntax error
-- Ensure pending flags are initialized
-- Use numeric GID list for fetch-all
-- Prevent unscheduling unrelated jobs
-- Safer runIn callbacks
+## v1.1.1 (2026-01-19)
 
-### v1.1.0 (2026-01-18)
-- Automatic token refresh on HTTP 401
-- Network-aware retry/backoff logic
+- Fixed initialize() syntax
+- Improved scheduling
+- Improved pending retry handling
+
+## v1.1.0 (2026-01-18)
+
+- Automatic token refresh
+- Retry/backoff logic
 - Fetch retry throttling
-- Updated authenticate() to reset manual auth flags
-- Scheduling improvements
 
+## Earlier Releases
 
+- v1.0.5 — Refresh retry scheduling improvements
+- v1.0.4 — Multiple devices and nested circuits
+- v1.0.3 — Layout improvements
+- v1.0.2 — Device synchronization improvements
+- v1.0.1 — Scheduling fix
+- v1.0.0 — Initial public release
